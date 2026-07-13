@@ -1,12 +1,22 @@
 # leapfrog-compare
 
-Interactive dashboard for comparing Spectrum modvar output against leapfrog-goals model output across a set of PJNZ files.
+Interactive dashboard for comparing Spectrum modvar output against leapfrog model output across a set of PJNZ files, and for comparing the `eppasm`/`eppasm-leapfrog` R packages against each other.
 
 ---
 
 ## Overview
 
-The app loads each PJNZ file directly, runs the leapfrog Goals model, and plots both the Goals output and the corresponding Spectrum modvar time series side by side.
+The dashboard has three top-level tabs, each an independent comparison over the same set of PJNZ files. Each top-level tab shares one PJNZ selector and year-range slider, and splits its plots across an inner row of sub-tabs — one per "type of plot":
+
+- **AIM** — leapfrog-py's `run_model(..., "Spectrum", ...)` (a DP/AIM-only engine run) vs the Spectrum modvars read directly from the PJNZ. Sub-tabs: **All ages**, **15-49**.
+- **Goals** — the leapfrog-goals model's `run_goals()` output (both its DP/AIM-derived arrays and its Goals-native pre-aggregated outputs) vs Spectrum modvars. Sub-tabs: **All ages**, **15-49**, **Risk groups**, **New infections**.
+- **EPPASM** — `eppasm::simmod()` vs `eppasm.lf::simmod()` (the eppasm-leapfrog fork), run by shelling out to R. Sub-tabs: **All ages** (with its own age-faceted view, using EPPASM's coarser 9-group age scheme), **15-49**.
+
+Each PJNZ is classified by inspecting the zip contents: a file containing a `.HV` member ran Spectrum's Goals/HIV module ("Goals"-capable); one without is "AIM"-only. The AIM tab only offers AIM-only PJNZ files, the Goals tab only offers Goals-capable ones, and the EPPASM tab offers all of them labelled `(Goals)` / `(AIM)`.
+
+Adding a new sub-tab is just adding one more `SubTab(...)` (or `RiskGroupSubTab(...)`) entry to the matching top-level tab's list in `app.py` — no other wiring required.
+
+The AIM and Goals tabs run entirely in-process and re-run live on every PJNZ selection change (no caching). The EPPASM tab shells out to R (much slower), so its results are cached to disk per (PJNZ, package) and only recomputed on first request or when you click **Re-run models** (shared across both of its sub-tabs, since they read the same underlying data).
 
 ```
 1. Drop .PJNZ files into PJNZ_DIR
@@ -22,6 +32,15 @@ The app loads each PJNZ file directly, runs the leapfrog Goals model, and plots 
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you haven't already.
 
+### 2. R and the eppasm / eppasm-leapfrog packages (only needed for the EPPASM tab)
+
+Install R and an `Rscript` executable on `PATH`. Then either:
+
+- **Install both packages properly** (preferred — faster per-run): `R CMD INSTALL /path/to/eppasm` and `R CMD INSTALL /path/to/eppasm-leapfrog`. `eppasm-leapfrog` additionally requires the `leapfrog` R package (`>= 0.1.8`, from the `mrc-ide.r-universe.dev` repo) — the compiled-engine comparison in the EPPASM tab won't work until this is satisfied.
+- **Or** point `EPPASM_DIR` / `EPPASM_LEAPFROG_DIR` in `config.py` at your local checkouts and set the matching `EPPASM_USE_LOCAL_CHECKOUT` / `EPPASM_LF_USE_LOCAL_CHECKOUT` flag to `True` — the R wrapper will load that package via `pkgload::load_all()` instead of an installed copy. Requires the `pkgload` R package.
+
+The two flags are independent and explicit — there's no auto-detection of which copy is available; check `config.py`'s defaults against what's actually installed in your R environment.
+
 ---
 
 ## Setup
@@ -32,7 +51,7 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you hav
 uv sync
 ```
 
-If you want to use an in development leapfrog-goals you will need to check it out locally and then update the `tools.uv.sources` section in `pyproject.toml` to point to your local path.
+If you want to use in-development versions of `leapfrog-goals` or `leapfrog-py`, check them out locally and update the `[tool.uv.sources]` section in `pyproject.toml` to point at your local paths.
 
 ### 2. Edit `src/leapfrog_compare/config.py`
 
@@ -42,6 +61,8 @@ Set `PJNZ_DIR` to the folder containing your `.PJNZ` files:
 PJNZ_DIR = Path("/home/user/data/pjnz_files")
 ```
 
+Review the EPPASM-tab settings (`EPPASM_DIR`, `EPPASM_LEAPFROG_DIR`, `EPPASM_USE_LOCAL_CHECKOUT`, `EPPASM_LF_USE_LOCAL_CHECKOUT`, `EPPASM_CACHE_DIR`, `R_EXECUTABLE`) if you plan to use that tab.
+
 ### 3. Launch the dashboard
 
 ```bash
@@ -50,6 +71,14 @@ uv run shiny run app.py
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 
+### 4. (Optional) Precompute EPPASM results
+
+To populate the EPPASM cache for every PJNZ ahead of time instead of waiting for it on first tab visit:
+
+```bash
+uv run python scripts/precompute_eppasm.py [--force]
+```
+
 ---
 
 ## Dashboard controls
@@ -57,19 +86,10 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 Global controls (sidebar):
 - **PJNZ** — select which projection to compare
 - **Year range** — slider set automatically from the PJNZ projection years
+- **Disaggregation** — optionally break down by five-year age group (All ages sub-tab only) and/or sex
+- **Re-run models** (EPPASM tab only) — force a fresh R run instead of using the cached CSVs
 
-The main area has three tabs:
-
-| Tab | Indicators | Disaggregation |
-|---|---|---|
-| **15-49** | 15–49 aggregate indicators; all three sources | By sex |
-| **All ages** | All-ages indicators; Leapfrog DP/AIM vs Spectrum | By age group and/or sex |
-| **Risk groups** | Fixed 5-panel risk-group fraction plot | By sex |
-
-Line styles:
-- **Leapfrog DP/AIM** (solid) — from `run_goals` DP/AIM-derived arrays
-- **Spectrum** (dashed) — read directly from PJNZ modvars
-- **Leapfrog Goals** (dotted) — Goals-native outputs; 15–49 tab only
+Each facet shows one line per source, in a consistent dash style per source (solid / dashed / dotted) and a consistent colour per demographic group across sources. The **Risk groups** and **New infections** sub-tabs (Goals tab only) instead show one fixed panel per risk group, comparing Goals vs Spectrum.
 
 ---
 
@@ -77,13 +97,23 @@ Line styles:
 
 ```
 leapfrog-compare/
-├── app.py                        # Shiny for Python dashboard
-├── pyproject.toml                # uv/pip project metadata
+├── app.py                             # Shiny for Python dashboard — composes the three tabs
+├── pyproject.toml                     # uv/pip project metadata
+├── r/
+│   └── run_simmod.R                   # Rscript wrapper: runs simmod() for one package, writes a tidy CSV
+├── scripts/
+│   └── precompute_eppasm.py           # Batch-populate the EPPASM cache for every PJNZ
 └── src/
     └── leapfrog_compare/
-        ├── config.py             # User configuration (PJNZ_DIR)
-        ├── pjnz_runner.py        # PJNZ loading + Goals model execution
-        └── indicator_map.py      # Goals output ↔ Spectrum modvar mapping
+        ├── config.py                  # User configuration (PJNZ_DIR, EPPASM_* settings)
+        ├── comparison_module.py       # Reusable Shiny module: one tab's UI + server logic
+        ├── plotting.py                # Generic N-source comparison figure renderer (all tabs)
+        ├── series_utils.py            # Shared series-reshaping helpers used by plotting.py
+        ├── indicator_map.py           # Goals/Spectrum tabs' indicator ↔ compute-function mapping
+        ├── eppasm_indicator_map.py    # EPPASM tab's indicator ↔ compute-function mapping
+        ├── pjnz_runner.py             # PJNZ loading + leapfrog-goals model execution (Goals tab)
+        ├── spectrum_runner.py         # PJNZ loading + leapfrog-py "Spectrum" model execution (Spectrum tab)
+        └── eppasm_runner.py           # Shells out to r/run_simmod.R, caches results (EPPASM tab)
 ```
 
 ---
@@ -315,38 +345,35 @@ When sex disaggregation is off, male (index 1) + female (index 2) are summed in 
 
 ## Adding new indicators
 
-Edit [src/leapfrog_compare/indicator_map.py](src/leapfrog_compare/indicator_map.py). There are two indicator types depending on which tab the indicator belongs to:
+Each `IndicatorDef` (in `indicator_map.py` for the AIM/Goals tabs, `eppasm_indicator_map.py` for the EPPASM tab) holds one `disagg` dict keyed by source id (`"dp_aim"`, `"spectrum"`, `"spectrum_aim"`, `"goals"`, `"eppasm"`, `"eppasm_lf"`), each value a function `(data, disagg_age, disagg_sex) -> list[(label, 1-D ndarray)]`. A source is simply omitted from the dict when it has no data for that indicator.
 
-**All-ages tab** — add an `AllAgesIndicatorDef` to `ALL_AGES_INDICATORS`:
-```python
-AllAgesIndicatorDef(
-    compute_leapfrog=...,   # (output, disagg_age, disagg_sex) -> list[(label, ndarray)]
-    compute_spectrum=...,   # (modvars, disagg_age, disagg_sex) -> list[(label, ndarray)] | None
-)
-```
-Use `_disagg_std(key)` or `_disagg_art()` for the Leapfrog function.
+To add an AIM/Goals-tab indicator, edit [src/leapfrog_compare/indicator_map.py](src/leapfrog_compare/indicator_map.py):
 
-**15–49 tab** — add an `Indicator1549Def` to `INDICATORS_1549`:
-```python
-Indicator1549Def(
-    compute_leapfrog=...,   # (output, disagg_sex) -> list[(label, ndarray)]
-    compute_spectrum=...,   # (modvars, disagg_sex) -> list[(label, ndarray)] | None
-    compute_goals=...,      # (goals_output, disagg_sex) -> list[(label, ndarray)] | None
-)
-```
-Use `_lf_1549(key)` for standard (81, 2, n_years) Goals arrays restricted to ages 15–49.
+1. Write a `"dp_aim"` disagg function. Use `_disagg_std(key)` for all-ages arrays, `_disagg_std_1549(key)` for 15–49 restricted (returns `[]` when age disagg is on), or `_no_age_disagg(fn)` to disable age disagg on any existing function.
+2. Optionally write a `"spectrum"` disagg function for the Goals tab (HV_*-based modvars) and/or a `"spectrum_aim"` disagg function for the AIM tab (AM_*/DP_*-based modvars, via the `_am_disagg`/`_am_disagg_1549` factories) if a matching modvar exists (`_totals_only(fn)` if only a single combined value is available).
+3. Optionally write a `"goals"` disagg function for Goals-native outputs (`_as_full_disagg(fn)` to adapt a `(data, disagg_sex)` function, hidden in the age-faceted view).
+4. Add the indicator name to `ALL_AGES_INDICATOR_NAMES` or `FIFTEEN_49_INDICATOR_NAMES` so it's offered on the corresponding sub-tab.
+5. Add an `IndicatorDef(disagg={...})` entry to `INDICATOR_MAP`.
 
-Label convention: use `"Total"` for all-ages unsplit series, `"15-49"` for 15–49 unsplit series, `"Male"` / `"Female"` for sex-disaggregated series.
+To add an EPPASM-tab indicator, edit [src/leapfrog_compare/eppasm_indicator_map.py](src/leapfrog_compare/eppasm_indicator_map.py) and [r/run_simmod.R](r/run_simmod.R) (to emit the new derived series into the tidy CSV).
+
+To add a new sub-tab to an existing top-level tab, add one more `SubTab(...)` (or `RiskGroupSubTab(...)`) entry to the matching list in `app.py` (e.g. `_GOALS_SUBTABS`) — no other wiring required. To add a new top-level tab entirely, write a `run_fn` returning `(data_by_source, output_years)`, a list of `plotting.ComparisonSource`s, and call `_build_tab_ui`/`_wire_tab_server` with a new set of `SubTab`s.
 
 ---
 
 ## Troubleshooting
 
-**`leapfrog_goals` not found**
-Re-run `uv pip install /path/to/leapfrog/goals`. Check that a compiled `.so` (Linux/Mac) or `.pyd` (Windows) file is present in the installed package.
+**`leapfrog_goals` / `leapfrog_py` not found**
+Re-run `uv sync`. Check that a compiled `.so` (Linux/Mac) or `.pyd` (Windows) file is present in the installed package.
 
 **Dashboard shows "No PJNZ files found"**
 Check that `PJNZ_DIR` in `config.py` points to a directory containing `.PJNZ` files (case-sensitive extension).
 
 **A country's data looks truncated or goes NaN**
 The Goals model may produce NaN values for some countries if a parameter causes a numerical instability. Check the terminal output for errors when the PJNZ is loaded.
+
+**EPPASM tab shows an error for one package but not the other**
+This is expected when only one of `eppasm` / `eppasm-leapfrog` is properly set up in your R environment (see Prerequisites) — the other source's plot still renders. Check the error text (surfaced from the R subprocess's stderr) for the specific missing dependency.
+
+**EPPASM tab is slow on first load for a given PJNZ**
+Expected — it's shelling out to R and running `simmod()` twice. Subsequent loads for the same PJNZ read from the `output/eppasm/` cache; use **Re-run models** or `scripts/precompute_eppasm.py --force` to refresh it.

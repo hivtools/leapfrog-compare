@@ -1,39 +1,38 @@
 """
-Interactive comparison dashboard — Spectrum vs leapfrog-goals.
+Interactive comparison dashboard — AIM vs Goals vs EPPASM leapfrog comparisons.
 
 Usage:
     uv run shiny run app.py
 """
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from shiny import App, reactive, render, ui
+from shiny import App, ui
 
 import leapfrog_compare.config as config
-from leapfrog_compare.indicator_map import (
-    AGE_LABELS, ALL_AGES_INDICATORS, INDICATORS_1549,
-    RISK_GROUPS, compute_rg_goals, compute_rg_spectrum,
-    compute_new_infections_rg_goals, compute_new_infections_rg_spectrum,
+from leapfrog_compare.comparison_module import (
+    data_panel_server, data_panel_ui, plot_panel_server, plot_panel_ui,
+    risk_group_panel_server, risk_group_panel_ui,
 )
+from leapfrog_compare.eppasm_indicator_map import (
+    EPPASM_ALL_AGES_INDICATOR_NAMES, EPPASM_FIFTEEN_49_INDICATOR_NAMES,
+    EPPASM_AGE_LABELS, EPPASM_INDICATOR_MAP,
+)
+from leapfrog_compare.eppasm_runner import run_eppasm_both
+from leapfrog_compare.indicator_map import (
+    AGE_LABELS, ALL_AGES_INDICATOR_NAMES, FIFTEEN_49_INDICATOR_NAMES, INDICATOR_MAP,
+    RISK_GROUPS, compute_new_infections_rg_goals, compute_new_infections_rg_spectrum,
+    compute_rg_goals, compute_rg_spectrum,
+)
+from leapfrog_compare.pjnz_classify import is_goals_pjnz
 from leapfrog_compare.pjnz_runner import run_pjnz
+from leapfrog_compare.plotting import ComparisonSource
+from leapfrog_compare.spectrum_runner import run_spectrum
 
-# Colors assigned per demographic group (e.g. "Male", "Female", "Total", "0-4").
-# Leapfrog = solid line; Spectrum = dashed line in the same color.
-_PALETTE = [
-    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-    "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
-    "#c49c94", "#f7b6d2",
-]
-
-_ALL_AGES_NAMES = list(ALL_AGES_INDICATORS.keys())
-_1549_NAMES = list(INDICATORS_1549.keys())
 _DEFAULT_YEAR_MIN = 1970
 _DEFAULT_YEAR_MAX = 2030
-_N_AGE_GROUPS = len(AGE_LABELS)
 
 _pjnz_files: dict[str, Path] = {
     p.stem: p
@@ -41,606 +40,236 @@ _pjnz_files: dict[str, Path] = {
 }
 _pjnz_stems = list(_pjnz_files.keys())
 
+# Classify each PJNZ as "Goals" (has a .HV member — ran Spectrum's Goals/HIV
+# module) or "AIM" (doesn't). The AIM tab only offers AIM-only files, the Goals
+# tab only offers Goals-capable files, and EPPASM offers all of them labelled.
+_pjnz_is_goals: dict[str, bool] = {stem: is_goals_pjnz(path) for stem, path in _pjnz_files.items()}
+_pjnz_stems_goals = [s for s in _pjnz_stems if _pjnz_is_goals[s]]
+_pjnz_stems_aim = [s for s in _pjnz_stems if not _pjnz_is_goals[s]]
+_pjnz_choices_eppasm: dict[str, str] = {
+    s: f"{s} (Goals)" if _pjnz_is_goals[s] else f"{s} (AIM)" for s in _pjnz_stems
+}
 
-def _series_for_age_cell(
-    all_series: list[tuple[str, np.ndarray]],
-    age_label: str,
-) -> list[tuple[str, np.ndarray]]:
-    """Extract series for one age-group column from a fully disaggregated series list."""
-    cell: list[tuple[str, np.ndarray]] = []
-    for label, values in all_series:
-        if " / " in label:
-            a_part, s_part = label.split(" / ", 1)
-            if a_part == age_label:
-                cell.append((s_part, values))
-        elif label == age_label:
-            cell.append(("Total", values))
-    if not cell:
-        # No age breakdown for this indicator — fall back to totals
-        for label, values in all_series:
-            if " / " not in label:
-                cell.append((label, values))
-    return cell
+_GOALS_SOURCES = [
+    ComparisonSource(key="dp_aim", label="Leapfrog DP/AIM", dash=None, primary=True),
+    ComparisonSource(key="spectrum", label="Spectrum", dash="dash", needs_offset_align=True),
+    ComparisonSource(key="goals", label="Leapfrog Goals", dash="dot", supports_age_facet=False),
+]
 
+_AIM_SOURCES = [
+    ComparisonSource(key="dp_aim", label="Leapfrog AIM", dash=None, primary=True),
+    ComparisonSource(key="spectrum_aim", label="Spectrum", dash="dash", needs_offset_align=True),
+]
 
-def _dp_aim_label(demo: str) -> str:
-    return "Leapfrog DP/AIM" if demo == "Total" else f"Leapfrog DP/AIM {demo}"
-
-
-def _goals_label(demo: str) -> str:
-    return "Leapfrog Goals" if demo == "Total" else f"Leapfrog Goals {demo}"
+_EPPASM_SOURCES = [
+    ComparisonSource(key="eppasm", label="eppasm", dash=None, primary=True),
+    ComparisonSource(key="eppasm_lf", label="eppasm-leapfrog", dash="dash"),
+]
 
 
-def _spectrum_label(demo: str) -> str:
-    return "Spectrum" if demo == "Total" else f"Spectrum {demo}"
+def _goals_run_fn(pjnz_path: Path):
+    modvars, goals_output, output_years = run_pjnz(pjnz_path)
+    return {"dp_aim": goals_output, "spectrum": modvars, "goals": goals_output}, output_years
+
+
+def _aim_run_fn(pjnz_path: Path):
+    modvars, leapfrog_output, output_years = run_spectrum(pjnz_path)
+    return {"dp_aim": leapfrog_output, "spectrum_aim": modvars}, output_years
+
+
+def _eppasm_run_fn(pjnz_path: Path, force: bool = False):
+    return run_eppasm_both(pjnz_path, force=force)
 
 
 # ---------------------------------------------------------------------------
-# UI
+# Sub-tab definitions: adding a new "type of plot" to a top-level tab is just
+# adding one more SubTab here (and one more entry in the matching TOP_TABS list).
 # ---------------------------------------------------------------------------
 
-app_ui = ui.page_fluid(
-    ui.head_content(
-        ui.tags.script(src="https://cdn.plot.ly/plotly-latest.min.js")
+@dataclass
+class SubTab:
+    id: str
+    label: str
+    indicator_names: list[str]
+    default_indicators: list[str]
+    indicator_map: dict
+    sources: list[ComparisonSource]
+    age_labels: list[str]
+    show_age_checkbox: bool = True
+
+
+@dataclass
+class RiskGroupSubTab:
+    """A sub-tab with the dedicated one-row-per-risk-group layout (no indicator
+    selector, no age faceting) — see plotting.render_risk_group_comparison."""
+    id: str
+    label: str
+    compute_fns: dict[str, Any]
+    title_prefix: str
+
+
+_GOALS_RISKGROUP_SOURCES = [
+    ComparisonSource(key="goals", label="Leapfrog Goals", dash=None),
+    ComparisonSource(key="spectrum", label="Spectrum", dash="dash"),
+]
+
+
+_AIM_SUBTABS = [
+    SubTab(
+        id="aim_allages", label="All ages",
+        indicator_names=ALL_AGES_INDICATOR_NAMES, default_indicators=ALL_AGES_INDICATOR_NAMES[:3],
+        indicator_map=INDICATOR_MAP, sources=_AIM_SOURCES, age_labels=AGE_LABELS,
     ),
-    ui.page_sidebar(
-        ui.sidebar(
-            ui.h5("Filters"),
-            ui.input_selectize(
-                "pjnz",
-                label="PJNZ",
-                choices=_pjnz_stems,
-                selected=_pjnz_stems[0] if _pjnz_stems else None,
-            ),
-            ui.hr(),
-            ui.input_slider(
-                "year_range",
-                "Year range",
-                min=_DEFAULT_YEAR_MIN,
-                max=_DEFAULT_YEAR_MAX,
-                value=[_DEFAULT_YEAR_MIN, _DEFAULT_YEAR_MAX],
-                step=1,
-                sep="",
-            ),
-            width=260,
-        ),
-        ui.navset_card_tab(
-            ui.nav_panel(
-                "All ages",
-                ui.div(
-                    ui.input_selectize(
-                        "indicators_all",
-                        label="Indicators",
-                        choices=_ALL_AGES_NAMES,
-                        multiple=True,
-                        selected=_ALL_AGES_NAMES[:3],
-                        options={"plugins": ["remove_button"]},
-                    ),
-                    ui.div(
-                        ui.input_checkbox("disagg_age", "By age group", value=False),
-                        ui.input_checkbox("disagg_sex_all", "By sex", value=False),
-                        style="display: flex; gap: 24px; margin-top: 6px; margin-bottom: 6px;",
-                    ),
-                    style="padding: 10px 12px 4px 12px;",
-                ),
-                ui.div(
-                    ui.output_ui("all_ages_plot"),
-                    style="overflow-x: auto; overflow-y: auto;",
-                ),
-            ),
-            ui.nav_panel(
-                "15-49",
-                ui.div(
-                    ui.input_selectize(
-                        "indicators_1549",
-                        label="Indicators",
-                        choices=_1549_NAMES,
-                        multiple=True,
-                        selected=_1549_NAMES,
-                        options={"plugins": ["remove_button"]},
-                    ),
-                    ui.div(
-                        ui.input_checkbox("disagg_sex_1549", "By sex", value=False),
-                        style="margin-top: 6px; margin-bottom: 6px;",
-                    ),
-                    style="padding: 10px 12px 4px 12px;",
-                ),
-                ui.div(
-                    ui.output_ui("plot_1549"),
-                    style="overflow-x: auto; overflow-y: auto;",
-                ),
-            ),
-            ui.nav_panel(
-                "Risk groups",
-                ui.div(
-                    ui.div(
-                        ui.input_checkbox("disagg_sex_rg", "By sex", value=False),
-                        style="margin-top: 6px; margin-bottom: 6px;",
-                    ),
-                    style="padding: 10px 12px 4px 12px;",
-                ),
-                ui.div(
-                    ui.output_ui("risk_groups_plot"),
-                    style="overflow-x: auto; overflow-y: auto;",
-                ),
-            ),
-            ui.nav_panel(
-                "New infections",
-                ui.div(
-                    ui.div(
-                        ui.input_checkbox("disagg_sex_ni", "By sex", value=False),
-                        style="margin-top: 6px; margin-bottom: 6px;",
-                    ),
-                    style="padding: 10px 12px 4px 12px;",
-                ),
-                ui.div(
-                    ui.output_ui("new_infections_plot"),
-                    style="overflow-x: auto; overflow-y: auto;",
-                ),
-            ),
-            id="main_tabs",
-            selected="15-49",
-        ),
-        title="Leapfrog Comparison",
-        fillable=True,
+    SubTab(
+        id="aim_1549", label="15-49",
+        indicator_names=FIFTEEN_49_INDICATOR_NAMES, default_indicators=FIFTEEN_49_INDICATOR_NAMES,
+        indicator_map=INDICATOR_MAP, sources=_AIM_SOURCES, age_labels=AGE_LABELS,
+        show_age_checkbox=False,
     ),
+]
+
+_GOALS_SUBTABS = [
+    SubTab(
+        id="goals_allages", label="All ages",
+        indicator_names=ALL_AGES_INDICATOR_NAMES, default_indicators=ALL_AGES_INDICATOR_NAMES[:3],
+        indicator_map=INDICATOR_MAP, sources=_GOALS_SOURCES, age_labels=AGE_LABELS,
+    ),
+    SubTab(
+        id="goals_1549", label="15-49",
+        indicator_names=FIFTEEN_49_INDICATOR_NAMES, default_indicators=FIFTEEN_49_INDICATOR_NAMES,
+        indicator_map=INDICATOR_MAP, sources=_GOALS_SOURCES, age_labels=AGE_LABELS,
+        show_age_checkbox=False,
+    ),
+]
+
+_GOALS_RISKGROUP_SUBTABS = [
+    RiskGroupSubTab(
+        id="goals_riskgroups", label="Risk groups",
+        compute_fns={"goals": compute_rg_goals, "spectrum": compute_rg_spectrum},
+        title_prefix="Risk groups",
+    ),
+    RiskGroupSubTab(
+        id="goals_newinfections", label="New infections",
+        compute_fns={"goals": compute_new_infections_rg_goals, "spectrum": compute_new_infections_rg_spectrum},
+        title_prefix="New infections by risk group",
+    ),
+]
+
+_EPPASM_SUBTABS = [
+    SubTab(
+        id="eppasm_allages", label="All ages",
+        indicator_names=EPPASM_ALL_AGES_INDICATOR_NAMES, default_indicators=EPPASM_ALL_AGES_INDICATOR_NAMES[:3],
+        indicator_map=EPPASM_INDICATOR_MAP, sources=_EPPASM_SOURCES, age_labels=EPPASM_AGE_LABELS,
+    ),
+    SubTab(
+        id="eppasm_1549", label="15-49",
+        indicator_names=EPPASM_FIFTEEN_49_INDICATOR_NAMES, default_indicators=EPPASM_FIFTEEN_49_INDICATOR_NAMES,
+        indicator_map=EPPASM_INDICATOR_MAP, sources=_EPPASM_SOURCES, age_labels=EPPASM_AGE_LABELS,
+        show_age_checkbox=False,
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# UI / server composition: one nav_panel per top-level tab, one inner
+# navset_tab per top-level tab's SubTabs, sharing a single data_panel.
+# ---------------------------------------------------------------------------
+
+def _build_tab_ui(
+    top_id: str,
+    title: str,
+    sub_tabs: list[SubTab],
+    *,
+    pjnz_choices: list[str] | dict[str, str] = _pjnz_stems,
+    show_rerun_button: bool = False,
+    risk_group_subtabs: list[RiskGroupSubTab] = (),
+):
+    return ui.nav_panel(
+        title,
+        ui.layout_sidebar(
+            data_panel_ui(
+                top_id,
+                pjnz_choices=pjnz_choices,
+                year_min=_DEFAULT_YEAR_MIN,
+                year_max=_DEFAULT_YEAR_MAX,
+                show_rerun_button=show_rerun_button,
+            ),
+            ui.navset_tab(*[
+                ui.nav_panel(
+                    st.label,
+                    plot_panel_ui(
+                        st.id,
+                        indicator_names=st.indicator_names,
+                        default_indicators=st.default_indicators,
+                        show_age_checkbox=st.show_age_checkbox,
+                    ),
+                )
+                for st in sub_tabs
+            ], *[
+                ui.nav_panel(rgt.label, risk_group_panel_ui(rgt.id))
+                for rgt in risk_group_subtabs
+            ]),
+            fillable=True,
+        ),
+    )
+
+
+def _wire_tab_server(
+    top_id: str,
+    run_fn,
+    sub_tabs: list[SubTab],
+    *,
+    show_rerun_button: bool = False,
+    risk_group_subtabs: list[RiskGroupSubTab] = (),
+):
+    data_run, year_range, pjnz_label = data_panel_server(
+        top_id, pjnz_files=_pjnz_files, run_fn=run_fn, show_rerun_button=show_rerun_button,
+    )
+    for st in sub_tabs:
+        plot_panel_server(
+            st.id,
+            data_run=data_run,
+            year_range=year_range,
+            pjnz_label=pjnz_label,
+            indicator_map=st.indicator_map,
+            sources=st.sources,
+            age_labels=st.age_labels,
+            show_age_checkbox=st.show_age_checkbox,
+        )
+    for rgt in risk_group_subtabs:
+        risk_group_panel_server(
+            rgt.id,
+            data_run=data_run,
+            year_range=year_range,
+            pjnz_label=pjnz_label,
+            risk_groups=RISK_GROUPS,
+            sources=_GOALS_RISKGROUP_SOURCES,
+            compute_fns=rgt.compute_fns,
+            title_prefix=rgt.title_prefix,
+        )
+
+
+app_ui = ui.page_navbar(
+    _build_tab_ui("aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim),
+    _build_tab_ui(
+        "goals", "Goals", _GOALS_SUBTABS,
+        pjnz_choices=_pjnz_stems_goals, risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS,
+    ),
+    _build_tab_ui(
+        "eppasm", "EPPASM", _EPPASM_SUBTABS,
+        pjnz_choices=_pjnz_choices_eppasm, show_rerun_button=True,
+    ),
+    id="main_nav",
+    title="Leapfrog Comparison",
+    header=ui.head_content(ui.tags.script(src="https://cdn.plot.ly/plotly-latest.min.js")),
+    fillable=True,
 )
 
 
-# ---------------------------------------------------------------------------
-# Server
-# ---------------------------------------------------------------------------
-
 def server(input, output, session):
-
-    @reactive.calc
-    def _run_pjnz():
-        """Returns (data, error_str). Exactly one of the two will be None."""
-        pjnz_stem = input.pjnz()
-        if not pjnz_stem or pjnz_stem not in _pjnz_files:
-            return None, None
-        try:
-            return run_pjnz(_pjnz_files[pjnz_stem]), None
-        except Exception as exc:
-            print(f"[app] Failed to run {pjnz_stem}: {exc}")
-            return None, str(exc)
-
-    @reactive.effect
-    def _update_year_slider():
-        result, _ = _run_pjnz()
-        if result is None:
-            return
-        _, _, output_years = result
-        y_min, y_max = int(min(output_years)), int(max(output_years))
-        ui.update_slider("year_range", min=y_min, max=y_max, value=[y_min, y_max])
-
-    def _loading_ui(error: str | None):
-        if error:
-            return ui.div(
-                ui.p(
-                    f"Error running model for '{input.pjnz()}':",
-                    style="font-weight:bold; color:#c0392b; margin-bottom:4px;",
-                ),
-                ui.pre(error, style="white-space:pre-wrap; color:#c0392b; font-size:0.85em;"),
-            )
-        msg = (
-            "No PJNZ files found, check 'PJNZ_DIR' in 'config.py'."
-            if not _pjnz_stems else "Loading..."
-        )
-        return ui.p(msg)
-
-    def _make_trace_helpers(fig, line_width: float):
-        demo_colors: dict[str, str] = {}
-        palette_idx = 0
-        legend_shown: set[str] = set()
-
-        def _color_for(demo: str) -> str:
-            nonlocal palette_idx
-            if demo not in demo_colors:
-                demo_colors[demo] = _PALETTE[palette_idx % len(_PALETTE)]
-                palette_idx += 1
-            return demo_colors[demo]
-
-        def add_trace(x, y, trace_name, demo, dash, row, col):
-            show_leg = trace_name not in legend_shown
-            if show_leg:
-                legend_shown.add(trace_name)
-            y_clean = [None if isinstance(v, float) and np.isnan(v) else v for v in y]
-            fig.add_trace(
-                go.Scatter(
-                    x=x,
-                    y=y_clean,
-                    mode="lines",
-                    name=trace_name,
-                    line=dict(color=_color_for(demo), width=line_width, dash=dash),
-                    legendgroup=trace_name,
-                    showlegend=show_leg,
-                ),
-                row=row,
-                col=col,
-            )
-
-        return add_trace
-
-    # -----------------------------------------------------------------------
-    # All-ages tab
-    # -----------------------------------------------------------------------
-
-    @render.ui
-    def all_ages_plot():
-        input.main_tabs()
-        result, error = _run_pjnz()
-        if result is None:
-            return _loading_ui(error)
-
-        modvars, goals_output, output_years = result
-        selected = input.indicators_all()
-        year_start, year_end = input.year_range()
-        disagg_age = input.disagg_age()
-        disagg_sex = input.disagg_sex_all()
-
-        if not selected:
-            return ui.p("Select at least one indicator.")
-
-        years_arr = np.array(list(output_years))
-        mask = (years_arr >= year_start) & (years_arr <= year_end)
-        x_years = years_arr[mask].tolist()
-        first_year = int(min(output_years))
-        n_inds = len(selected)
-
-        _age_label_set = set(AGE_LABELS)
-
-        def _align_spec(spec_values: np.ndarray):
-            year_idx = years_arr - first_year
-            valid = (year_idx >= 0) & (year_idx < len(spec_values))
-            combined = mask & valid
-            return years_arr[combined].tolist(), spec_values[year_idx[combined].astype(int)].tolist()
-
-        def _has_age_labels(series: list[tuple[str, np.ndarray]]) -> bool:
-            for label, _ in series:
-                part = label.split(" / ")[0] if " / " in label else label
-                if part in _age_label_set:
-                    return True
-            return False
-
-        # -------------------------------------------------------------------
-        # Age-faceted layout: rows = indicators, cols = age groups
-        # -------------------------------------------------------------------
-        if disagg_age:
-            ncols = _N_AGE_GROUPS
-            fig_width = max(1600, ncols * 110)
-            fig_height = max(300, n_inds * 220)
-
-            fig = make_subplots(
-                rows=n_inds,
-                cols=ncols,
-                row_titles=list(selected),
-                column_titles=AGE_LABELS,
-                shared_xaxes="columns",
-                shared_yaxes=False,
-                vertical_spacing=max(0.015, 0.25 / max(n_inds, 1)),
-                horizontal_spacing=0.01,
-            )
-            add_trace = _make_trace_helpers(fig, line_width=1.5)
-
-            for ind_idx, indicator in enumerate(selected):
-                row = ind_idx + 1
-                ind_def = ALL_AGES_INDICATORS[indicator]
-                all_series = ind_def.compute_leapfrog(goals_output, True, disagg_sex)
-
-                spec_all: list[tuple[str, np.ndarray]] = []
-                if ind_def.compute_spectrum is not None:
-                    try:
-                        spec_all = ind_def.compute_spectrum(modvars, True, disagg_sex)
-                    except Exception as exc:
-                        print(f"[app] Spectrum disagg failed for {indicator}: {exc}")
-                spec_has_ages = _has_age_labels(spec_all)
-
-                for age_idx, age_label in enumerate(AGE_LABELS):
-                    col = age_idx + 1
-                    for demo, values in _series_for_age_cell(all_series, age_label):
-                        add_trace(x_years, values[mask].tolist(), _dp_aim_label(demo), demo, None, row, col)
-                    if spec_has_ages:
-                        for demo, spec_values in _series_for_age_cell(spec_all, age_label):
-                            spec_x, spec_y = _align_spec(spec_values)
-                            if spec_x:
-                                add_trace(spec_x, spec_y, _spectrum_label(demo), demo, "dash", row, col)
-
-            fig.update_xaxes(showticklabels=False, showgrid=True, gridcolor="#e5e5e5")
-            fig.update_yaxes(
-                showgrid=True, gridcolor="#e5e5e5", rangemode="tozero",
-                tickfont=dict(size=8),
-            )
-            for col in range(1, ncols + 1):
-                fig.update_xaxes(
-                    showticklabels=True, tickformat="d", tickangle=90,
-                    tickfont=dict(size=8), row=n_inds, col=col,
-                )
-            fig.update_layout(
-                width=fig_width,
-                height=fig_height,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                title_text=f"Comparison — {input.pjnz()}",
-                margin=dict(t=80, b=60, l=60, r=120),
-                plot_bgcolor="white",
-                paper_bgcolor="white",
-            )
-
-        # -------------------------------------------------------------------
-        # Simple layout: one column, rows = indicators
-        # -------------------------------------------------------------------
-        else:
-            fig_height = max(400, n_inds * 300)
-            fig = make_subplots(
-                rows=n_inds,
-                cols=1,
-                subplot_titles=list(selected),
-                shared_xaxes=False,
-                vertical_spacing=max(0.04, 0.3 / max(n_inds, 1)),
-            )
-            add_trace = _make_trace_helpers(fig, line_width=2)
-
-            for ind_idx, indicator in enumerate(selected):
-                row = ind_idx + 1
-                ind_def = ALL_AGES_INDICATORS[indicator]
-
-                for demo, values in ind_def.compute_leapfrog(goals_output, False, disagg_sex):
-                    add_trace(x_years, values[mask].tolist(), _dp_aim_label(demo), demo, None, row, 1)
-
-                if ind_def.compute_spectrum is not None:
-                    try:
-                        for demo, spec_values in ind_def.compute_spectrum(modvars, False, disagg_sex):
-                            spec_x, spec_y = _align_spec(spec_values)
-                            if spec_x:
-                                add_trace(spec_x, spec_y, _spectrum_label(demo), demo, "dash", row, 1)
-                    except Exception as exc:
-                        print(f"[app] Spectrum failed for {indicator}: {exc}")
-
-            fig.update_xaxes(
-                showgrid=True, gridcolor="#e5e5e5",
-                range=[year_start - 1, year_end + 1],
-                tickformat="d", tickangle=45,
-            )
-            fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
-            fig.update_layout(
-                height=fig_height,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                title_text=f"Comparison — {input.pjnz()}",
-                margin=dict(t=80, b=40, l=60, r=20),
-                plot_bgcolor="white",
-                paper_bgcolor="white",
-            )
-
-        return ui.HTML(fig.to_html(full_html=False, include_plotlyjs=False))
-
-    # -----------------------------------------------------------------------
-    # 15-49 tab
-    # -----------------------------------------------------------------------
-
-    @render.ui
-    def plot_1549():
-        input.main_tabs()
-        result, error = _run_pjnz()
-        if result is None:
-            return _loading_ui(error)
-
-        modvars, goals_output, output_years = result
-        selected = input.indicators_1549()
-        year_start, year_end = input.year_range()
-        disagg_sex = input.disagg_sex_1549()
-
-        if not selected:
-            return ui.p("Select at least one indicator.")
-
-        years_arr = np.array(list(output_years))
-        mask = (years_arr >= year_start) & (years_arr <= year_end)
-        x_years = years_arr[mask].tolist()
-        first_year = int(min(output_years))
-        n_inds = len(selected)
-
-        def _align_spec(spec_values: np.ndarray):
-            year_idx = years_arr - first_year
-            valid = (year_idx >= 0) & (year_idx < len(spec_values))
-            combined = mask & valid
-            return years_arr[combined].tolist(), spec_values[year_idx[combined].astype(int)].tolist()
-
-        fig_height = max(400, n_inds * 300)
-        fig = make_subplots(
-            rows=n_inds,
-            cols=1,
-            subplot_titles=list(selected),
-            shared_xaxes=False,
-            vertical_spacing=max(0.04, 0.3 / max(n_inds, 1)),
-        )
-        add_trace = _make_trace_helpers(fig, line_width=2)
-
-        for ind_idx, indicator in enumerate(selected):
-            row = ind_idx + 1
-            ind_def = INDICATORS_1549[indicator]
-
-            for demo, values in ind_def.compute_leapfrog(goals_output, disagg_sex):
-                add_trace(x_years, values[mask].tolist(), _dp_aim_label(demo), demo, None, row, 1)
-
-            if ind_def.compute_spectrum is not None:
-                try:
-                    for demo, spec_values in ind_def.compute_spectrum(modvars, disagg_sex):
-                        spec_x, spec_y = _align_spec(spec_values)
-                        if spec_x:
-                            add_trace(spec_x, spec_y, _spectrum_label(demo), demo, "dash", row, 1)
-                except Exception as exc:
-                    print(f"[app] Spectrum failed for {indicator}: {exc}")
-
-            if ind_def.compute_goals is not None:
-                try:
-                    for demo, values in ind_def.compute_goals(goals_output, disagg_sex):
-                        add_trace(x_years, values[mask].tolist(), _goals_label(demo), demo, "dot", row, 1)
-                except Exception as exc:
-                    print(f"[app] Goals failed for {indicator}: {exc}")
-
-        fig.update_xaxes(
-            showgrid=True, gridcolor="#e5e5e5",
-            range=[year_start - 1, year_end + 1],
-            tickformat="d", tickangle=45,
-        )
-        fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
-        fig.update_layout(
-            height=fig_height,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            title_text=f"Comparison — {input.pjnz()}",
-            margin=dict(t=80, b=40, l=60, r=20),
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-        )
-
-        return ui.HTML(fig.to_html(full_html=False, include_plotlyjs=False))
-
-    # -----------------------------------------------------------------------
-    # Risk groups tab
-    # -----------------------------------------------------------------------
-
-    @render.ui
-    def risk_groups_plot():
-        input.main_tabs()
-        result, error = _run_pjnz()
-        if result is None:
-            return _loading_ui(error)
-
-        modvars, goals_output, output_years = result
-        year_start, year_end = input.year_range()
-        disagg_sex = input.disagg_sex_rg()
-
-        years_arr = np.array(list(output_years))
-        mask = (years_arr >= year_start) & (years_arr <= year_end)
-        x_years = years_arr[mask].tolist()
-        first_year = int(min(output_years))
-        n_rg = len(RISK_GROUPS)
-        rg_row = {rg_name: i + 1 for i, (rg_name, _rg) in enumerate(RISK_GROUPS)}
-
-        def _align_spec(spec_values: np.ndarray):
-            year_idx = years_arr - first_year
-            valid = (year_idx >= 0) & (year_idx < len(spec_values))
-            combined = mask & valid
-            return years_arr[combined].tolist(), spec_values[year_idx[combined].astype(int)].tolist()
-
-        fig = make_subplots(
-            rows=n_rg,
-            cols=1,
-            subplot_titles=[rg_name for rg_name, _ in RISK_GROUPS],
-            shared_xaxes=False,
-            vertical_spacing=max(0.04, 0.3 / max(n_rg, 1)),
-        )
-        add_trace = _make_trace_helpers(fig, line_width=2)
-
-        try:
-            for rg_name, demo, values in compute_rg_goals(goals_output, disagg_sex):
-                add_trace(
-                    x_years, values[mask].tolist(),
-                    _goals_label(demo), demo, None, rg_row[rg_name], 1,
-                )
-        except Exception as exc:
-            print(f"[app] Risk groups Goals failed: {exc}")
-
-        try:
-            for rg_name, demo, spec_values in compute_rg_spectrum(modvars, disagg_sex):
-                spec_x, spec_y = _align_spec(spec_values)
-                if spec_x:
-                    add_trace(
-                        spec_x, spec_y,
-                        _spectrum_label(demo), demo, "dash", rg_row[rg_name], 1,
-                    )
-        except Exception as exc:
-            print(f"[app] Risk groups Spectrum failed: {exc}")
-
-        fig.update_xaxes(
-            showgrid=True, gridcolor="#e5e5e5",
-            range=[year_start - 1, year_end + 1],
-            tickformat="d", tickangle=45,
-        )
-        fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
-        fig.update_layout(
-            height=max(500, n_rg * 250),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            title_text=f"Risk groups — {input.pjnz()}",
-            margin=dict(t=80, b=40, l=60, r=20),
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-        )
-
-        return ui.HTML(fig.to_html(full_html=False, include_plotlyjs=False))
-
-    # -----------------------------------------------------------------------
-    # New infections tab
-    # -----------------------------------------------------------------------
-
-    @render.ui
-    def new_infections_plot():
-        input.main_tabs()
-        result, error = _run_pjnz()
-        if result is None:
-            return _loading_ui(error)
-
-        modvars, goals_output, output_years = result
-        year_start, year_end = input.year_range()
-        disagg_sex = input.disagg_sex_ni()
-
-        years_arr = np.array(list(output_years))
-        mask = (years_arr >= year_start) & (years_arr <= year_end)
-        x_years = years_arr[mask].tolist()
-        first_year = int(min(output_years))
-        n_rg = len(RISK_GROUPS)
-        rg_row = {rg_name: i + 1 for i, (rg_name, _rg) in enumerate(RISK_GROUPS)}
-
-        def _align_spec(spec_values: np.ndarray):
-            year_idx = years_arr - first_year
-            valid = (year_idx >= 0) & (year_idx < len(spec_values))
-            combined = mask & valid
-            return years_arr[combined].tolist(), spec_values[year_idx[combined].astype(int)].tolist()
-
-        fig = make_subplots(
-            rows=n_rg,
-            cols=1,
-            subplot_titles=[rg_name for rg_name, _ in RISK_GROUPS],
-            shared_xaxes=False,
-            vertical_spacing=max(0.04, 0.3 / max(n_rg, 1)),
-        )
-        add_trace = _make_trace_helpers(fig, line_width=2)
-
-        try:
-            for rg_name, demo, values in compute_new_infections_rg_goals(goals_output, disagg_sex):
-                add_trace(
-                    x_years, values[mask].tolist(),
-                    _goals_label(demo), demo, None, rg_row[rg_name], 1,
-                )
-        except Exception as exc:
-            print(f"[app] New infections Goals failed: {exc}")
-
-        try:
-            for rg_name, demo, spec_values in compute_new_infections_rg_spectrum(modvars, disagg_sex):
-                spec_x, spec_y = _align_spec(spec_values)
-                if spec_x:
-                    add_trace(
-                        spec_x, spec_y,
-                        _spectrum_label(demo), demo, "dash", rg_row[rg_name], 1,
-                    )
-        except Exception as exc:
-            print(f"[app] New infections Spectrum failed: {exc}")
-
-        fig.update_xaxes(
-            showgrid=True, gridcolor="#e5e5e5",
-            range=[year_start - 1, year_end + 1],
-            tickformat="d", tickangle=45,
-        )
-        fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
-        fig.update_layout(
-            height=max(500, n_rg * 250),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            title_text=f"New infections by risk group — {input.pjnz()}",
-            margin=dict(t=80, b=40, l=60, r=20),
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-        )
-
-        return ui.HTML(fig.to_html(full_html=False, include_plotlyjs=False))
+    _wire_tab_server("aim", _aim_run_fn, _AIM_SUBTABS)
+    _wire_tab_server("goals", _goals_run_fn, _GOALS_SUBTABS, risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS)
+    _wire_tab_server("eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True)
 
 
 app = App(app_ui, server)
