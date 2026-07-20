@@ -39,7 +39,7 @@ def run_pjnz(pjnz_path: Path) -> tuple[dict, dict[str, np.ndarray], range]:
     end = time.time()
 
     elapsed_ms = (end-start) * 1000
-    print(f"Mode fit took: {elapsed_ms} ms")
+    print(f"Goals model fit took: {elapsed_ms} ms")
 
 
     print(f"lfg total population, t end: {goals_output["total_population"][-1]:.1f}")
