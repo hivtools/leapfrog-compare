@@ -183,9 +183,22 @@ def _build_tab_ui(
     pjnz_choices: list[str] | dict[str, str] = _pjnz_stems,
     show_rerun_button: bool = False,
     risk_group_subtabs: list[RiskGroupSubTab] = (),
+    wip_note: str | None = None,
 ):
+    banner = (
+        [ui.div(
+            ui.strong("Work in progress: "),
+            wip_note,
+            style=(
+                "background:#fff3cd; border:1px solid #ffe08a; border-radius:4px; "
+                "padding:8px 12px; margin-bottom:12px; color:#664d03; font-size:0.9em;"
+            ),
+        )]
+        if wip_note else []
+    )
     return ui.nav_panel(
         title,
+        *banner,
         ui.layout_sidebar(
             data_panel_ui(
                 top_id,
@@ -250,7 +263,14 @@ def _wire_tab_server(
 
 
 app_ui = ui.page_navbar(
-    _build_tab_ui("aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim),
+    _build_tab_ui(
+        "aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim,
+        wip_note=(
+            "the Spectrum comparison uses the model run from the PJNZ inputs — "
+            "Spectrum's own output indicators are not yet extracted from the PJNZ. "
+            "That will be added in the future."
+        ),
+    ),
     _build_tab_ui(
         "goals", "Goals", _GOALS_SUBTABS,
         pjnz_choices=_pjnz_stems_goals, risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS,

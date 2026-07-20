@@ -5,7 +5,7 @@ Edit this file to match your local setup before running the app.
 from pathlib import Path
 
 # Directory that contains the .PJNZ files to process.
-PJNZ_DIR: Path = Path("~/Downloads/pjnz")
+PJNZ_DIR: Path = Path("~/Downloads")
 
 # --- EPPASM tab settings ---------------------------------------------------
 # R executable used to shell out to the eppasm / eppasm-leapfrog wrapper script.
@@ -24,7 +24,7 @@ EPPASM_LEAPFROG_DIR: Path = Path("C:/Users/Test/projects/eppasm-leapfrog")
 # `leapfrog` R package is older than the >=0.1.8 it requires), so its flag
 # defaults to True; flip to False once both are properly installed.
 EPPASM_USE_LOCAL_CHECKOUT: bool = False
-EPPASM_LF_USE_LOCAL_CHECKOUT: bool = True
+EPPASM_LF_USE_LOCAL_CHECKOUT: bool = False
 
 # Where cached EPPASM CSV results are stored, keyed by (pjnz stem, package).
 EPPASM_CACHE_DIR: Path = Path("output/eppasm")

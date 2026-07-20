@@ -69,16 +69,25 @@ def _pivot_to_arrays(df: pd.DataFrame, output_years: range) -> dict[str, dict[st
 
 def run_eppasm_both(pjnz_path: Path, *, force: bool = False) -> tuple[dict, range]:
     """Runs both packages and returns (data_by_source, output_years), matching the
-    comparison module's run_fn contract. If one package fails (e.g. a missing R
-    dependency), the other's results still render — only raises if both fail."""
+    comparison module's run_fn contract. This tab is a like-for-like comparison of
+    the two packages, so both must run: if either fails (e.g. the R package isn't
+    installed) we raise, and the comparison module surfaces the message as an error
+    on the EPPASM page. The rest of the app is unaffected — each tab runs and
+    reports errors independently."""
     dfs: dict[str, pd.DataFrame] = {}
+    errors: list[str] = []
     for pkg in ("eppasm", "eppasm.lf"):
         try:
             dfs[pkg] = run_eppasm(pjnz_path, pkg, force=force)
         except Exception as exc:
             print(f"[eppasm_runner] {pkg} failed for {pjnz_path.stem}: {exc}")
-    if not dfs:
-        raise RuntimeError("Both eppasm and eppasm.lf failed to run — see server logs for details.")
+            errors.append(f"--- {pkg} ---\n{exc}")
+    if errors:
+        raise RuntimeError(
+            "The EPPASM tab compares the 'eppasm' and 'eppasm.lf' R packages, so "
+            "both must run successfully. The following failed (is the R package "
+            "installed?):\n\n" + "\n\n".join(errors)
+        )
 
     all_years = pd.concat(dfs.values())["year"]
     output_years = range(int(all_years.min()), int(all_years.max()) + 1)
