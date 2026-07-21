@@ -278,3 +278,86 @@ def risk_group_panel_server(
             title=f"{title_prefix} — {pjnz_label()}",
         )
         return ui.HTML(html)
+
+
+# ---------------------------------------------------------------------------
+# Facet panel: indicator dropdown (single-select) + "By sex" checkbox + a
+# one-row-per-facet-group rendered plot (render_risk_group_comparison), where
+# the facet group is CD4 stage rather than risk group and which indicator's
+# compute_fns/labels are active is chosen dynamically via the dropdown. Used
+# by the AIM/Goals tabs' "0-14" sub-tabs.
+# ---------------------------------------------------------------------------
+
+@module.ui
+def facet_panel_ui(*, indicator_names: list[str]):
+    return ui.div(
+        ui.input_selectize(
+            "indicator",
+            label="Indicator",
+            choices=indicator_names,
+            selected=indicator_names[0] if indicator_names else None,
+        ),
+        ui.div(
+            ui.input_checkbox("disagg_sex", "By sex", value=False),
+            style="margin: 6px 0 12px 0;",
+        ),
+        ui.div(
+            ui.output_ui("comparison_plot"),
+            style="overflow-x: auto; overflow-y: auto;",
+        ),
+        style="padding-top: 12px;",
+    )
+
+
+@module.server
+def facet_panel_server(
+    input,
+    output,
+    session,
+    *,
+    data_run: Callable[[], tuple],
+    year_range: Callable[[], tuple[int, int]],
+    pjnz_label: Callable[[], str],
+    # Indicator name -> object with `.cd4_labels: list[str]` and
+    # `.compute_fns: dict[str, Callable]` (duck-typed to
+    # indicator_map.ChildCD4IndicatorDef).
+    facet_map: dict[str, Any],
+    sources: list[ComparisonSource],
+    title_prefix: str,
+    no_pjnz_message: str = "No PJNZ files found, check 'PJNZ_DIR' in 'config.py'.",
+):
+    @output
+    @render.ui
+    def comparison_plot():
+        result, error = data_run()
+        if result is None:
+            if error:
+                return ui.div(
+                    ui.p(
+                        f"Error running model for '{pjnz_label()}':",
+                        style="font-weight:bold; color:#c0392b; margin-bottom:4px;",
+                    ),
+                    ui.pre(error, style="white-space:pre-wrap; color:#c0392b; font-size:0.85em;"),
+                )
+            return ui.p(no_pjnz_message)
+
+        indicator = input.indicator()
+        if not indicator or indicator not in facet_map:
+            return ui.p("Select an indicator.")
+
+        data_by_source, output_years = result
+        year_start, year_end = year_range()
+        ind_def = facet_map[indicator]
+
+        html = render_risk_group_comparison(
+            risk_groups=[(lbl, i) for i, lbl in enumerate(ind_def.cd4_labels)],
+            sources=sources,
+            data_by_source=data_by_source,
+            compute_fns=ind_def.compute_fns,
+            output_years=output_years,
+            year_start=year_start,
+            year_end=year_end,
+            disagg_sex=input.disagg_sex(),
+            title=f"{title_prefix} — {indicator} — {pjnz_label()}",
+        )
+        return ui.HTML(html)

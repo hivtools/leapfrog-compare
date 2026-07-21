@@ -40,10 +40,23 @@ from typing import Callable
 import numpy as np
 
 from SpectrumCommon.Const.AM.AMTags import (  # type: ignore[import-untyped]
+    AM_AIDSDeathsARTSingleAgeTag,
     AM_AIDSDeathsByAgeTag,
+    AM_AIDSDeathsNoARTSingleAgeTag,
+    AM_CD4DistributionChildTag,
     AM_HIVBySingleAgeTag,
     AM_NewInfectionsBySingleAgeTag,
     AM_OnARTBySingleAgeTag,
+)
+from SpectrumCommon.Const.DP.DPConst import (  # type: ignore[import-untyped]
+    DP_CD4_0t4,
+    DP_CD4_5t14,
+    DP_CD4_Ped_GT1000,
+    DP_CD4_Per_GT30,
+    DP_D_ARTlt6m,
+    DP_NoTreat,
+    DP_OnART,
+    DP_P_Perinatal,
 )
 from SpectrumCommon.Const.DP.DPTags import DP_BigPopTag  # type: ignore[import-untyped]
 from SpectrumCommon.Const.HV.HVTags import (  # type: ignore[import-untyped]
@@ -77,6 +90,17 @@ AGE_LABELS: list[str] = [
     f"{a}-{b}" if b < 80 else "80+" for a, b in AGE_GROUPS
 ]
 SEX_LABELS = ["Male", "Female"]
+
+# CD4 stages for the pediatric age bands (hc1 = 0-4, hc2 = 5-14), fixed order
+# matching leapfrog's hc1DS/hc2DS array index 0..N-1.
+CD4_LABELS_HC1: list[str] = [
+    "CD4 >=30", "CD4 [26, 30)", "CD4 [21, 25)", "CD4 [16, 20)",
+    "CD4 [11, 15)", "CD4 [5, 10)", "CD4 < 5",
+]
+CD4_LABELS_HC2: list[str] = [
+    "CD4 >=1000", "CD4 [750, 999)", "CD4 [500, 749)",
+    "CD4 [350, 499)", "CD4 [200, 349)", "CD4 <200",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +678,183 @@ def compute_new_infections_rg_spectrum(modvars: dict, disagg_sex: bool) -> list[
             values = arr[1, spec_rg_idx, RN_UnV] + arr[2, spec_rg_idx, RN_UnV]
             result.append((rg_name, "Total", values))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Child (0-14) CD4-faceted indicators ("0-14" sub-tab). Each compute fn has
+# the same (data, disagg_sex) -> list[(facet_label, demo, ndarray)] shape as
+# the risk-group compute fns above, so they plug directly into
+# plotting.render_risk_group_comparison unmodified — the "facet_label" is a
+# CD4 stage (population indicators) or "Total" (death indicators, since no
+# Spectrum modvar is CD4-stratified for child deaths — see below).
+# ---------------------------------------------------------------------------
+
+def _lf_child_cd4_noart(key: str, cd4_labels: list[str]) -> Callable:
+    """Factory for hc{1,2}_hivpop, shape (CD4, hcTT=4, AGE, NS=2, T). Sums
+    hcTT (axis 1) and AGE (axis 2); CD4 (axis 0) is the facet axis; NS
+    (axis 3, 0=Male/1=Female) is the optional sex split."""
+    def fn(output: dict, disagg_sex: bool) -> list[tuple[str, str, np.ndarray]]:
+        summed = output[key].sum(axis=(1, 2))  # -> (CD4, NS=2, T)
+        result: list[tuple[str, str, np.ndarray]] = []
+        for c_idx, cd4_label in enumerate(cd4_labels):
+            if disagg_sex:
+                for sex_idx, sex_label in enumerate(SEX_LABELS):
+                    result.append((cd4_label, sex_label, summed[c_idx, sex_idx, :]))
+            else:
+                result.append((cd4_label, "Total", summed[c_idx, 0, :] + summed[c_idx, 1, :]))
+        return result
+    return fn
+
+
+def _lf_child_cd4_art(key: str, cd4_labels: list[str]) -> Callable:
+    """Factory for hc{1,2}_artpop, shape (hTS=3, CD4, AGE, NS=2, T). Sums
+    hTS (axis 0) and AGE (axis 2); CD4 is axis 1 here."""
+    def fn(output: dict, disagg_sex: bool) -> list[tuple[str, str, np.ndarray]]:
+        summed = output[key].sum(axis=(0, 2))  # -> (CD4, NS=2, T)
+        result: list[tuple[str, str, np.ndarray]] = []
+        for c_idx, cd4_label in enumerate(cd4_labels):
+            if disagg_sex:
+                for sex_idx, sex_label in enumerate(SEX_LABELS):
+                    result.append((cd4_label, sex_label, summed[c_idx, sex_idx, :]))
+            else:
+                result.append((cd4_label, "Total", summed[c_idx, 0, :] + summed[c_idx, 1, :]))
+        return result
+    return fn
+
+
+def _spec_child_cd4_noart(age_grp: int, cd4_offset: int, cd4_labels: list[str]) -> Callable:
+    """AM_CD4DistributionChildTag[sex, age_grp, CD4, TT, DP_NoTreat, T]. Sums
+    the TT axis (DP_P_Perinatal..+4, 4 values). Sex axis: 1=Male, 2=Female
+    (index 0='both' is unused, per this module's docstring — always sum
+    1+2 manually)."""
+    def fn(modvars: dict, disagg_sex: bool) -> list[tuple[str, str, np.ndarray]]:
+        arr = np.array(modvars[AM_CD4DistributionChildTag])
+        result: list[tuple[str, str, np.ndarray]] = []
+        for c_idx, cd4_label in enumerate(cd4_labels):
+            c = c_idx + cd4_offset
+            sub = arr[:, age_grp, c, DP_P_Perinatal:DP_P_Perinatal + 4, DP_NoTreat, :].sum(axis=1)
+            if disagg_sex:
+                result.append((cd4_label, "Male", sub[1]))
+                result.append((cd4_label, "Female", sub[2]))
+            else:
+                result.append((cd4_label, "Total", sub[1] + sub[2]))
+        return result
+    return fn
+
+
+def _spec_child_cd4_art(age_grp: int, cd4_offset: int, cd4_labels: list[str]) -> Callable:
+    """AM_CD4DistributionChildTag[sex, age_grp, CD4, ARTdur, DP_OnART, T].
+    Sums the ART-duration axis (DP_D_ARTlt6m..+3, 3 values)."""
+    def fn(modvars: dict, disagg_sex: bool) -> list[tuple[str, str, np.ndarray]]:
+        arr = np.array(modvars[AM_CD4DistributionChildTag])
+        result: list[tuple[str, str, np.ndarray]] = []
+        for c_idx, cd4_label in enumerate(cd4_labels):
+            c = c_idx + cd4_offset
+            sub = arr[:, age_grp, c, DP_D_ARTlt6m:DP_D_ARTlt6m + 3, DP_OnART, :].sum(axis=1)
+            if disagg_sex:
+                result.append((cd4_label, "Male", sub[1]))
+                result.append((cd4_label, "Female", sub[2]))
+            else:
+                result.append((cd4_label, "Total", sub[1] + sub[2]))
+        return result
+    return fn
+
+
+_spec_child_cd4_hc1_noart = _spec_child_cd4_noart(DP_CD4_0t4, DP_CD4_Per_GT30, CD4_LABELS_HC1)
+_spec_child_cd4_hc2_noart = _spec_child_cd4_noart(DP_CD4_5t14, DP_CD4_Ped_GT1000, CD4_LABELS_HC2)
+_spec_child_cd4_hc1_art = _spec_child_cd4_art(DP_CD4_0t4, DP_CD4_Per_GT30, CD4_LABELS_HC1)
+_spec_child_cd4_hc2_art = _spec_child_cd4_art(DP_CD4_5t14, DP_CD4_Ped_GT1000, CD4_LABELS_HC2)
+
+
+def _lf_child_total(key: str) -> Callable:
+    """Sum an hc{1,2}_*_aids_deaths array fully over every axis except the
+    last two (NS, T) — both death-array families reduce the same way (3
+    axes to collapse, whichever CD4/TT-or-ARTdur/age axes those are for
+    that particular array). Produces a single 'Total' facet row, since
+    Spectrum has no CD4 breakdown to compare against for child deaths."""
+    def fn(output: dict, disagg_sex: bool) -> list[tuple[str, str, np.ndarray]]:
+        arr = output[key]
+        summed = arr.sum(axis=tuple(range(arr.ndim - 2)))  # -> (NS=2, T)
+        if disagg_sex:
+            return [("Total", SEX_LABELS[0], summed[0]), ("Total", SEX_LABELS[1], summed[1])]
+        return [("Total", "Total", summed[0] + summed[1])]
+    return fn
+
+
+def _spec_child_death_total(tag, age_slice: slice) -> Callable:
+    """AM_AIDSDeathsARTSingleAgeTag / AM_AIDSDeathsNoARTSingleAgeTag, shape
+    (sex=3, single_age=81, T) — no CD4 axis exists in this modvar. Restrict
+    to the hc1 (0:5) or hc2 (5:15) age slice and sum over age."""
+    def fn(modvars: dict, disagg_sex: bool) -> list[tuple[str, str, np.ndarray]]:
+        arr = np.array(modvars[tag])
+        sub = arr[:, age_slice, :].sum(axis=1)  # -> (sex=3, T)
+        if disagg_sex:
+            return [("Total", "Male", sub[1]), ("Total", "Female", sub[2])]
+        return [("Total", "Total", sub[1] + sub[2])]
+    return fn
+
+
+_spec_child_death_hc1_art = _spec_child_death_total(AM_AIDSDeathsARTSingleAgeTag, slice(0, 5))
+_spec_child_death_hc2_art = _spec_child_death_total(AM_AIDSDeathsARTSingleAgeTag, slice(5, 15))
+_spec_child_death_hc1_noart = _spec_child_death_total(AM_AIDSDeathsNoARTSingleAgeTag, slice(0, 5))
+_spec_child_death_hc2_noart = _spec_child_death_total(AM_AIDSDeathsNoARTSingleAgeTag, slice(5, 15))
+
+
+@dataclass
+class ChildCD4IndicatorDef:
+    """Like IndicatorDef, but for the CD4-faceted child sub-tab: `compute_fns`
+    has the (data, disagg_sex) -> list[(facet_label, demo, ndarray)] shape
+    used by plotting.render_risk_group_comparison, and `cd4_labels` supplies
+    that indicator's row order/count (7 for hc1/0-4, 6 for hc2/5-14, or a
+    single "Total" row for the death indicators)."""
+    cd4_labels: list[str]
+    compute_fns: dict[str, Callable[[dict, bool], list[tuple[str, str, np.ndarray]]]]
+
+
+CHILD_CD4_INDICATOR_NAMES: list[str] = [
+    "0-4 HIV population", "5-14 HIV population",
+    "0-4 On ART population", "5-14 On ART population",
+    "0-4 AIDS deaths (on ART)", "5-14 AIDS deaths (on ART)",
+    "0-4 AIDS deaths (not on ART)", "5-14 AIDS deaths (not on ART)",
+]
+
+CHILD_CD4_INDICATOR_MAP: OrderedDict[str, ChildCD4IndicatorDef] = OrderedDict([
+    ("0-4 HIV population", ChildCD4IndicatorDef(CD4_LABELS_HC1, {
+        "dp_aim": _lf_child_cd4_noart("hc1_hivpop", CD4_LABELS_HC1),
+        "spectrum_aim": _spec_child_cd4_hc1_noart, "spectrum": _spec_child_cd4_hc1_noart,
+    })),
+    ("5-14 HIV population", ChildCD4IndicatorDef(CD4_LABELS_HC2, {
+        "dp_aim": _lf_child_cd4_noart("hc2_hivpop", CD4_LABELS_HC2),
+        "spectrum_aim": _spec_child_cd4_hc2_noart, "spectrum": _spec_child_cd4_hc2_noart,
+    })),
+    ("0-4 On ART population", ChildCD4IndicatorDef(CD4_LABELS_HC1, {
+        "dp_aim": _lf_child_cd4_art("hc1_artpop", CD4_LABELS_HC1),
+        "spectrum_aim": _spec_child_cd4_hc1_art, "spectrum": _spec_child_cd4_hc1_art,
+    })),
+    ("5-14 On ART population", ChildCD4IndicatorDef(CD4_LABELS_HC2, {
+        "dp_aim": _lf_child_cd4_art("hc2_artpop", CD4_LABELS_HC2),
+        "spectrum_aim": _spec_child_cd4_hc2_art, "spectrum": _spec_child_cd4_hc2_art,
+    })),
+    # Death indicators: no Spectrum modvar is CD4-stratified for deaths, so
+    # these use cd4_labels=["Total"] — render_risk_group_comparison then
+    # renders a single row instead of 6/7.
+    ("0-4 AIDS deaths (on ART)", ChildCD4IndicatorDef(["Total"], {
+        "dp_aim": _lf_child_total("hc1_art_aids_deaths"),
+        "spectrum_aim": _spec_child_death_hc1_art, "spectrum": _spec_child_death_hc1_art,
+    })),
+    ("5-14 AIDS deaths (on ART)", ChildCD4IndicatorDef(["Total"], {
+        "dp_aim": _lf_child_total("hc2_art_aids_deaths"),
+        "spectrum_aim": _spec_child_death_hc2_art, "spectrum": _spec_child_death_hc2_art,
+    })),
+    ("0-4 AIDS deaths (not on ART)", ChildCD4IndicatorDef(["Total"], {
+        "dp_aim": _lf_child_total("hc1_noart_aids_deaths"),
+        "spectrum_aim": _spec_child_death_hc1_noart, "spectrum": _spec_child_death_hc1_noart,
+    })),
+    ("5-14 AIDS deaths (not on ART)", ChildCD4IndicatorDef(["Total"], {
+        "dp_aim": _lf_child_total("hc2_noart_aids_deaths"),
+        "spectrum_aim": _spec_child_death_hc2_noart, "spectrum": _spec_child_death_hc2_noart,
+    })),
+])
 
 
 # ---------------------------------------------------------------------------
