@@ -2,7 +2,7 @@
 Interactive comparison dashboard — AIM vs Goals vs EPPASM leapfrog comparisons.
 
 Usage:
-    uv run shiny run app.py
+    uv run app
 """
 
 from dataclasses import dataclass, field
@@ -26,6 +26,12 @@ from leapfrog_compare.eppasm_indicator_map import (
     EPPASM_AGE_LABELS, EPPASM_INDICATOR_MAP,
 )
 from leapfrog_compare.eppasm_runner import run_eppasm_both
+from leapfrog_compare.fitmod_runner import run_fitmod_both
+from leapfrog_compare.ll_module import (
+    ll_data_panel_server, ll_data_panel_ui, ll_result_panel_server, ll_result_panel_ui,
+    job_status_ui, theta_panel_server, theta_panel_ui,
+)
+from leapfrog_compare.ll_runner import run_ll_both
 from leapfrog_compare.indicator_map import (
     AGE_LABELS, AGE_PROFILE_INDICATOR_NAMES, ALL_AGES_INDICATOR_NAMES, CHILD_CD4_INDICATOR_MAP,
     CHILD_CD4_INDICATOR_NAMES, DEATHS_INDICATOR_NAMES, FIFTEEN_49_INDICATOR_NAMES, INDICATOR_MAP,
@@ -475,6 +481,23 @@ _EPPASM_SUBTABS = [
     ),
 ]
 
+# fitmod's refit `mod` (simmod() at the posterior mean theta) is emitted in
+# the exact same tidy shape as the simmod tab's output, so it reuses the same
+# indicator map/sources — just under different SubTab ids.
+_FITMOD_SUBTABS = [
+    SubTab(
+        id="fitmod_allages", label="All ages",
+        indicator_names=EPPASM_ALL_AGES_INDICATOR_NAMES, default_indicators=EPPASM_ALL_AGES_INDICATOR_NAMES[:3],
+        indicator_map=EPPASM_INDICATOR_MAP, sources=_EPPASM_SOURCES, age_labels=EPPASM_AGE_LABELS,
+    ),
+    SubTab(
+        id="fitmod_1549", label="15-49",
+        indicator_names=EPPASM_FIFTEEN_49_INDICATOR_NAMES, default_indicators=EPPASM_FIFTEEN_49_INDICATOR_NAMES,
+        indicator_map=EPPASM_INDICATOR_MAP, sources=_EPPASM_SOURCES, age_labels=EPPASM_AGE_LABELS,
+        show_age_checkbox=False,
+    ),
+]
+
 
 # ---------------------------------------------------------------------------
 # UI / server composition: one nav_panel per top-level tab, one inner
@@ -767,6 +790,115 @@ def _wire_multi_tab_server(
         )
 
 
+# ---------------------------------------------------------------------------
+# "ll" tab: unlike simmod/fitmod's tidy time series, ll() returns a handful of
+# named log-likelihood components for a single theta, so it gets its own
+# small data/result panel pair (ll_module.py) instead of reusing
+# data_panel_ui/plot_panel_ui.
+# ---------------------------------------------------------------------------
+
+def _build_ll_tab_ui(top_id: str, title: str, *, pjnz_choices, wip_note: str | None = None):
+    banner = [_wip_banner(wip_note)] if wip_note else []
+    return ui.nav_panel(
+        title,
+        *banner,
+        ui.layout_sidebar(
+            ll_data_panel_ui(top_id, pjnz_choices=pjnz_choices, show_theta_controls=True),
+            ui.navset_tab(
+                ui.nav_panel("Likelihood", ll_result_panel_ui(f"{top_id}_result")),
+                ui.nav_panel("Theta", theta_panel_ui(f"{top_id}_theta")),
+            ),
+            fillable=True,
+        ),
+    )
+
+
+def _wire_ll_tab_server(top_id: str):
+    data_run, pjnz_label, region_label, _, theta_state = ll_data_panel_server(
+        top_id, pjnz_files=pjnz_files, pjnz_choices=pjnz_choices_eppasm, run_fn=run_ll_both,
+        use_theta=True,
+    )
+    ll_result_panel_server(
+        f"{top_id}_result", data_run=data_run, pjnz_label=pjnz_label, region_label=region_label,
+        theta_state=theta_state,
+    )
+    theta_panel_server(f"{top_id}_theta", theta_state=theta_state)
+
+
+# ---------------------------------------------------------------------------
+# "fitmod" tab: PJNZ+region+year-range data panel (ll_module.py's, with
+# show_year_range=True) feeding two kinds of sub-tab off the SAME (expensive,
+# only-on-Re-run) fitmod() call — the refit `mod` time series (reusing
+# plot_panel_ui/server, same as simmod) and the ll()-at-posterior-mean
+# breakdown (reusing ll_result_panel_ui/server, same as the ll tab). The
+# adapters below unwrap the shared data_run()'s "mod"/"ll" keys so each
+# existing panel server sees the shape it already expects.
+# ---------------------------------------------------------------------------
+
+def _build_fitmod_tab_ui(top_id: str, title: str, *, pjnz_choices, wip_note: str | None = None):
+    banner = [_wip_banner(wip_note)] if wip_note else []
+    return ui.nav_panel(
+        title,
+        *banner,
+        ui.layout_sidebar(
+            ll_data_panel_ui(
+                top_id, pjnz_choices=pjnz_choices, show_year_range=True,
+                year_min=_DEFAULT_YEAR_MIN, year_max=_DEFAULT_YEAR_MAX,
+                run_fn_label="Run fitmod", rerun_busy_label="Fitting…",
+            ),
+            job_status_ui(top_id),
+            ui.navset_tab(*[
+                ui.nav_panel(
+                    st.label,
+                    plot_panel_ui(
+                        st.id,
+                        indicator_names=st.indicator_names,
+                        default_indicators=st.default_indicators,
+                        show_age_checkbox=st.show_age_checkbox,
+                    ),
+                )
+                for st in _FITMOD_SUBTABS
+            ], ui.nav_panel("Likelihood", ll_result_panel_ui(f"{top_id}_ll"))),
+            fillable=True,
+        ),
+    )
+
+
+_FITMOD_NO_RESULT_MESSAGE = "No fitmod results to show yet — see the status above."
+
+
+def _wire_fitmod_tab_server(top_id: str):
+    data_run, pjnz_label, region_label, year_range, _ = ll_data_panel_server(
+        top_id, pjnz_files=pjnz_files, pjnz_choices=pjnz_choices_eppasm,
+        run_fn=run_fitmod_both, show_year_range=True, background_fitmod=True,
+    )
+
+    def mod_data_run():
+        result, error = data_run()
+        return (None, error) if result is None else (result["mod"], None)
+
+    def ll_data_run():
+        result, error = data_run()
+        return (None, error) if result is None else (result["ll"], None)
+
+    for st in _FITMOD_SUBTABS:
+        plot_panel_server(
+            st.id,
+            data_run=mod_data_run,
+            year_range=year_range,
+            pjnz_label=pjnz_label,
+            indicator_map=st.indicator_map,
+            sources=st.sources,
+            age_labels=st.age_labels,
+            show_age_checkbox=st.show_age_checkbox,
+            no_pjnz_message=_FITMOD_NO_RESULT_MESSAGE,
+        )
+    ll_result_panel_server(
+        f"{top_id}_ll", data_run=ll_data_run, pjnz_label=pjnz_label, region_label=region_label,
+        expect_match=False, no_pjnz_message=_FITMOD_NO_RESULT_MESSAGE,
+    )
+
+
 app_ui = ui.page_navbar(
     _build_tab_ui(
         "aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim_initial,
@@ -778,9 +910,29 @@ app_ui = ui.page_navbar(
         facet_subtabs=_GOALS_CHILD_SUBTABS, age_profile_subtabs=_GOALS_AGEPROFILE_SUBTABS,
         resource_needs_subtabs=_GOALS_RESOURCE_NEEDS_SUBTABS,
     ),
-    _build_tab_ui(
-        "eppasm", "EPPASM", _EPPASM_SUBTABS,
-        pjnz_choices=_pjnz_choices_eppasm_initial, show_rerun_button=True,
+    ui.nav_menu(
+        "EPPASM",
+        _build_ll_tab_ui(
+            "eppasm_ll", "ll", pjnz_choices=_pjnz_choices_eppasm_initial,
+            wip_note=(
+                "ll() is compared at a single theta: eppasm's posterior mode for the "
+                "selected PJNZ/region/EPP model (see the Theta tab). It checks that both "
+                "packages' ll() compute matching components on identical inputs at a "
+                "realistic fit, not that they agree across the whole posterior."
+            ),
+        ),
+        _build_tab_ui(
+            "eppasm", "simmod", _EPPASM_SUBTABS,
+            pjnz_choices=_pjnz_choices_eppasm_initial, show_rerun_button=True,
+        ),
+        _build_fitmod_tab_ui(
+            "eppasm_fitmod", "fitmod", pjnz_choices=_pjnz_choices_eppasm_initial,
+            wip_note=(
+                "uses a reduced IMIS budget (not eppasm's real defaults, which would "
+                "take hours) — a documented approximation of the production fit. "
+                "Expect ~10-20 minutes per package per run (it runs in the background)."
+            ),
+        ),
     ),
     _build_multi_tab_ui(
         "multi", "Multi PJNZ", _MULTI_SUBTABS,
@@ -812,10 +964,12 @@ def server(input, output, session):
         age_profile_subtabs=_GOALS_AGEPROFILE_SUBTABS,
         resource_needs_subtabs=_GOALS_RESOURCE_NEEDS_SUBTABS, pjnz_choices=pjnz_stems_goals,
     )
+    _wire_ll_tab_server("eppasm_ll")
     _wire_tab_server(
         "eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True,
         pjnz_choices=pjnz_choices_eppasm,
     )
+    _wire_fitmod_tab_server("eppasm_fitmod")
     _wire_multi_tab_server(
         "multi", _MULTI_SUBTABS,
         risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS, facet_subtabs=_MULTI_CHILD_SUBTABS,

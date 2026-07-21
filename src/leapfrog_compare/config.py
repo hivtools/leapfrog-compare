@@ -32,3 +32,17 @@ EPPASM_LF_USE_LOCAL_CHECKOUT: bool = False
 
 # Where cached EPPASM CSV results are stored, keyed by (pjnz stem, package).
 EPPASM_CACHE_DIR: Path = Path("output/eppasm")
+
+# Where cached `ll()` comparison results are stored, keyed by (pjnz stem,
+# region, package).
+EPPASM_LL_CACHE_DIR: Path = Path("output/eppasm_ll")
+
+# Where cached `fitmod()` comparison results are stored, keyed by (pjnz stem,
+# region, package).
+EPPASM_FITMOD_CACHE_DIR: Path = Path("output/eppasm_fitmod")
+
+# fitmod() runs a full IMIS fit by default (B0=1e5 prior draws, up to 500
+# iterations, each doing multiple simmod()/ll() calls) — this is genuinely
+# slow, so it gets its own, much longer timeout than the other EPPASM
+# subprocess calls. Increase further for large/complex PJNZ files.
+EPPASM_FITMOD_TIMEOUT: int = 3600
