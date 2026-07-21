@@ -13,8 +13,8 @@ from shiny import App, ui
 
 import leapfrog_compare.config as config
 from leapfrog_compare.comparison_module import (
-    data_panel_server, data_panel_ui, plot_panel_server, plot_panel_ui,
-    risk_group_panel_server, risk_group_panel_ui,
+    data_panel_server, data_panel_ui, facet_panel_server, facet_panel_ui,
+    plot_panel_server, plot_panel_ui, risk_group_panel_server, risk_group_panel_ui,
 )
 from leapfrog_compare.eppasm_indicator_map import (
     EPPASM_ALL_AGES_INDICATOR_NAMES, EPPASM_FIFTEEN_49_INDICATOR_NAMES,
@@ -22,7 +22,8 @@ from leapfrog_compare.eppasm_indicator_map import (
 )
 from leapfrog_compare.eppasm_runner import run_eppasm_both
 from leapfrog_compare.indicator_map import (
-    AGE_LABELS, ALL_AGES_INDICATOR_NAMES, FIFTEEN_49_INDICATOR_NAMES, INDICATOR_MAP,
+    AGE_LABELS, ALL_AGES_INDICATOR_NAMES, CHILD_CD4_INDICATOR_MAP,
+    CHILD_CD4_INDICATOR_NAMES, FIFTEEN_49_INDICATOR_NAMES, INDICATOR_MAP,
     RISK_GROUPS, compute_new_infections_rg_goals, compute_new_infections_rg_spectrum,
     compute_rg_goals, compute_rg_spectrum,
 )
@@ -108,9 +109,32 @@ class RiskGroupSubTab:
     title_prefix: str
 
 
+@dataclass
+class FacetSubTab:
+    """A sub-tab with a single-select indicator dropdown driving the same
+    one-row-per-group layout as RiskGroupSubTab (plotting.render_risk_group_comparison),
+    but the active `compute_fns`/group list is chosen dynamically per selected
+    indicator via `facet_map` — see comparison_module.facet_panel_ui/server.
+    Unlike RiskGroupSubTab, `sources` lives on the sub-tab itself (not a single
+    module-level constant), since the AIM and Goals '0-14' tabs need different
+    source keys (spectrum_aim vs spectrum)."""
+    id: str
+    label: str
+    indicator_names: list[str]
+    facet_map: dict[str, Any]
+    sources: list[ComparisonSource]
+    title_prefix: str
+    wip_note: str | None = None
+
+
 _GOALS_RISKGROUP_SOURCES = [
     ComparisonSource(key="goals", label="Leapfrog Goals", dash=None),
     ComparisonSource(key="spectrum", label="Spectrum", dash="dash"),
+]
+
+_GOALS_CHILD_CD4_SOURCES = [
+    ComparisonSource(key="dp_aim", label="Leapfrog Goals", dash=None),
+    ComparisonSource(key="spectrum", label="Spectrum", dash="dash", needs_offset_align=True),
 ]
 
 
@@ -155,6 +179,31 @@ _GOALS_RISKGROUP_SUBTABS = [
     ),
 ]
 
+_AIM_CHILD_SUBTABS = [
+    FacetSubTab(
+        id="aim_child_cd4", label="0-14",
+        indicator_names=CHILD_CD4_INDICATOR_NAMES, facet_map=CHILD_CD4_INDICATOR_MAP,
+        sources=_AIM_SOURCES, title_prefix="Child CD4 distribution",
+    ),
+]
+
+_GOALS_CHILD_SUBTABS = [
+    FacetSubTab(
+        id="goals_child_cd4", label="0-14",
+        indicator_names=CHILD_CD4_INDICATOR_NAMES, facet_map=CHILD_CD4_INDICATOR_MAP,
+        sources=_GOALS_CHILD_CD4_SOURCES, title_prefix="Child CD4 distribution",
+        wip_note=(
+            "the Spectrum comparison lines on this sub-tab (child CD4 "
+            "distribution for the population plots, and single-age AIDS-death "
+            "totals for the death plots) are not yet extracted from the PJNZ "
+            "import and will currently always show as zero. That will be added "
+            "in the future. Note also that the AIDS-deaths plots show a single "
+            "'Total' row rather than a per-CD4-stage breakdown, since Spectrum "
+            "has no CD4-stratified child-deaths output to compare against."
+        ),
+    ),
+]
+
 _EPPASM_SUBTABS = [
     SubTab(
         id="eppasm_allages", label="All ages",
@@ -175,6 +224,17 @@ _EPPASM_SUBTABS = [
 # navset_tab per top-level tab's SubTabs, sharing a single data_panel.
 # ---------------------------------------------------------------------------
 
+def _wip_banner(note: str):
+    return ui.div(
+        ui.strong("Work in progress: "),
+        note,
+        style=(
+            "background:#fff3cd; border:1px solid #ffe08a; border-radius:4px; "
+            "padding:8px 12px; margin-bottom:12px; color:#664d03; font-size:0.9em;"
+        ),
+    )
+
+
 def _build_tab_ui(
     top_id: str,
     title: str,
@@ -183,19 +243,10 @@ def _build_tab_ui(
     pjnz_choices: list[str] | dict[str, str] = _pjnz_stems,
     show_rerun_button: bool = False,
     risk_group_subtabs: list[RiskGroupSubTab] = (),
+    facet_subtabs: list[FacetSubTab] = (),
     wip_note: str | None = None,
 ):
-    banner = (
-        [ui.div(
-            ui.strong("Work in progress: "),
-            wip_note,
-            style=(
-                "background:#fff3cd; border:1px solid #ffe08a; border-radius:4px; "
-                "padding:8px 12px; margin-bottom:12px; color:#664d03; font-size:0.9em;"
-            ),
-        )]
-        if wip_note else []
-    )
+    banner = [_wip_banner(wip_note)] if wip_note else []
     return ui.nav_panel(
         title,
         *banner,
@@ -221,6 +272,13 @@ def _build_tab_ui(
             ], *[
                 ui.nav_panel(rgt.label, risk_group_panel_ui(rgt.id))
                 for rgt in risk_group_subtabs
+            ], *[
+                ui.nav_panel(
+                    ft.label,
+                    *([_wip_banner(ft.wip_note)] if ft.wip_note else []),
+                    facet_panel_ui(ft.id, indicator_names=ft.indicator_names),
+                )
+                for ft in facet_subtabs
             ]),
             fillable=True,
         ),
@@ -234,6 +292,7 @@ def _wire_tab_server(
     *,
     show_rerun_button: bool = False,
     risk_group_subtabs: list[RiskGroupSubTab] = (),
+    facet_subtabs: list[FacetSubTab] = (),
 ):
     data_run, year_range, pjnz_label = data_panel_server(
         top_id, pjnz_files=_pjnz_files, run_fn=run_fn, show_rerun_button=show_rerun_button,
@@ -260,20 +319,33 @@ def _wire_tab_server(
             compute_fns=rgt.compute_fns,
             title_prefix=rgt.title_prefix,
         )
+    for ft in facet_subtabs:
+        facet_panel_server(
+            ft.id,
+            data_run=data_run,
+            year_range=year_range,
+            pjnz_label=pjnz_label,
+            facet_map=ft.facet_map,
+            sources=ft.sources,
+            title_prefix=ft.title_prefix,
+        )
 
 
 app_ui = ui.page_navbar(
     _build_tab_ui(
         "aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim,
+        facet_subtabs=_AIM_CHILD_SUBTABS,
         wip_note=(
             "the Spectrum comparison uses the model run from the PJNZ inputs — "
-            "Spectrum's own output indicators are not yet extracted from the PJNZ. "
+            "Spectrum's own output indicators, including the child (0-14) CD4 "
+            "distribution breakdown, are not yet extracted from the PJNZ. "
             "That will be added in the future."
         ),
     ),
     _build_tab_ui(
         "goals", "Goals", _GOALS_SUBTABS,
         pjnz_choices=_pjnz_stems_goals, risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS,
+        facet_subtabs=_GOALS_CHILD_SUBTABS,
     ),
     _build_tab_ui(
         "eppasm", "EPPASM", _EPPASM_SUBTABS,
@@ -287,8 +359,11 @@ app_ui = ui.page_navbar(
 
 
 def server(input, output, session):
-    _wire_tab_server("aim", _aim_run_fn, _AIM_SUBTABS)
-    _wire_tab_server("goals", _goals_run_fn, _GOALS_SUBTABS, risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS)
+    _wire_tab_server("aim", _aim_run_fn, _AIM_SUBTABS, facet_subtabs=_AIM_CHILD_SUBTABS)
+    _wire_tab_server(
+        "goals", _goals_run_fn, _GOALS_SUBTABS,
+        risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS, facet_subtabs=_GOALS_CHILD_SUBTABS,
+    )
     _wire_tab_server("eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True)
 
 
