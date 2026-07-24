@@ -193,58 +193,52 @@ def _disagg_art() -> Callable:
 
 
 def _disagg_prevalence() -> Callable:
-    def fn(output: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """Prevalence (%) restricted to ages 15-49. Always called via _no_age_disagg,
+    which forces disagg_age=False, so the age range is hardcoded rather than
+    branching on disagg_age (matching _disagg_std_1549's pattern)."""
+    def fn(output: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
         hiv = output["p_hivpop"]
         tot = output["p_totpop"]
         series: list[tuple[str, np.ndarray]] = []
 
-        age_specs = (
-            [(label, slice(a, b + 1)) for (a, b), label in zip(AGE_GROUPS, AGE_LABELS)]
-            if disagg_age else [(None, None)]
-        )
         sex_specs = (
             [(sl, i) for i, sl in enumerate(SEX_LABELS)]
             if disagg_sex else [(None, None)]
         )
 
-        for age_label, age_sl in age_specs:
-            for sex_label, sex_idx in sex_specs:
-                h = _sum_std(hiv, age_sl, sex_idx)
-                t = _sum_std(tot, age_sl, sex_idx)
-                data = 100.0 * h / np.where(t == 0, np.nan, t)
-                parts = [p for p in [age_label, sex_label] if p]
-                label = " / ".join(parts) if parts else "15-49"
-                series.append((label, data))
+        for sex_label, sex_idx in sex_specs:
+            h = _sum_std(hiv, slice(15, 50), sex_idx)
+            t = _sum_std(tot, slice(15, 50), sex_idx)
+            data = 100.0 * h / np.where(t == 0, np.nan, t)
+            label = sex_label if sex_label else "15-49"
+            series.append((label, data))
         return series
     return fn
 
 
 def _disagg_incidence() -> Callable:
-    def fn(output: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """Incidence (%) restricted to ages 15-49. Always called via _no_age_disagg,
+    which forces disagg_age=False, so the age range is hardcoded rather than
+    branching on disagg_age (matching _disagg_std_1549's pattern)."""
+    def fn(output: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
         inf = output["p_infections"]
         hiv = output["p_hivpop"]
         tot = output["p_totpop"]
         series: list[tuple[str, np.ndarray]] = []
 
-        age_specs = (
-            [(label, slice(a, b + 1)) for (a, b), label in zip(AGE_GROUPS, AGE_LABELS)]
-            if disagg_age else [(None, None)]
-        )
         sex_specs = (
             [(sl, i) for i, sl in enumerate(SEX_LABELS)]
             if disagg_sex else [(None, None)]
         )
 
-        for age_label, age_sl in age_specs:
-            for sex_label, sex_idx in sex_specs:
-                i_ = _sum_std(inf, age_sl, sex_idx)
-                h = _sum_std(hiv, age_sl, sex_idx)
-                t = _sum_std(tot, age_sl, sex_idx)
-                hivneg = t - h
-                data = 100.0 * i_ / np.where(hivneg == 0, np.nan, hivneg)
-                parts = [p for p in [age_label, sex_label] if p]
-                label = " / ".join(parts) if parts else "15-49"
-                series.append((label, data))
+        for sex_label, sex_idx in sex_specs:
+            i_ = _sum_std(inf, slice(15, 50), sex_idx)
+            h = _sum_std(hiv, slice(15, 50), sex_idx)
+            t = _sum_std(tot, slice(15, 50), sex_idx)
+            hivneg = t - h
+            data = 100.0 * i_ / np.where(hivneg == 0, np.nan, hivneg)
+            label = sex_label if sex_label else "15-49"
+            series.append((label, data))
         return series
     return fn
 
@@ -918,7 +912,7 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
         "spectrum": _spec_aidsdeath_disagg,
         "spectrum_aim": _am_aidsdeath_disagg,
     })),
-    ("Total number receiving ART (15-49)", IndicatorDef(disagg={
+    ("Total number receiving ART (15+)", IndicatorDef(disagg={
         "dp_aim": _disagg_art(),
         "spectrum": _spec_art_disagg,
         "spectrum_aim": _am_art_disagg,
@@ -974,12 +968,12 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
 # omits the "goals" source so goals-native lines never render there.
 ALL_AGES_INDICATOR_NAMES: list[str] = [
     "Total population", "Total Births", "HIV population",
-    "New HIV infections", "AIDS deaths",
+    "New HIV infections", "AIDS deaths", "Total number receiving ART (15+)",
 ]
 FIFTEEN_49_INDICATOR_NAMES: list[str] = [
     "Total population (15-49)", "Total PLHIV (15-49)", "New HIV infections (15-49)",
     "AIDS deaths (15-49)", "Prevalence (15-49) (%)", "Incidence (15-49) (%)",
-    "Total number receiving ART (15-49)", "Total on ART (15-49)",
+    "Total on ART (15-49)",
 ]
 
 
