@@ -148,7 +148,10 @@ leapfrog-compare/
 | **Leapfrog DP/AIM output** | `births` |
 | **Leapfrog DP/AIM shape** | `(n_years,)` — total births per year |
 | **Leapfrog DP/AIM aggregation** | Used directly (no aggregation) |
-| **Spectrum modvar** | None — births is not read in yet |
+| **Spectrum modvar** | `DP_Births_V1` |
+| **Spectrum PJNZ tag** | `<Births MV>` |
+| **Spectrum shape** | `(3, 18, n_years)` — sex × 5-year age band × year; index 0 on *both* axes ("Both Sexes" / "All Ages") is a genuine pre-aggregated total |
+| **Spectrum aggregation** | Read directly at `[0, 0, :]` — unlike `DP_BigPop_V1`, index 0 here is trustworthy and is how SpectrumEngine's own `GetDP_Births` accessor reads it; no sex or age disaggregation available |
 
 ---
 
@@ -189,10 +192,13 @@ Sex disaggregation sums rows 1 and 2 over inner dims. Age disaggregation not ava
 | **Leapfrog DP/AIM output** | `p_hiv_deaths` |
 | **Leapfrog DP/AIM shape** | `(81, 2, n_years)` — ages × sex × years |
 | **Leapfrog DP/AIM aggregation** | Sum over all ages and both sexes |
-| **Spectrum modvar** | `HV_AIDSDeaths_V1` |
-| **Spectrum PJNZ tag** | `<AIDSDeaths MV>` |
-| **Spectrum shape** | `(3, 11, 5, 81)` — sex × risk group × vaccine state × year; index 0 = both, 1 = male, 2 = female |
-| **Spectrum aggregation** | Rows 1 (male) + 2 (female) summed over risk-group and vaccine-state dimensions |
+| **Spectrum modvar (Goals tab)** | `HV_AIDSDeaths_V1` |
+| **Spectrum PJNZ tag (Goals tab)** | `<AIDSDeaths MV>` |
+| **Spectrum shape (Goals tab)** | `(3, 11, 5, 81)` — sex × risk group × vaccine state × year; index 0 = both, 1 = male, 2 = female |
+| **Spectrum aggregation (Goals tab)** | Rows 1 (male) + 2 (female) summed over risk-group and vaccine-state dimensions |
+| **Spectrum modvar (AIM tab)** | `AM_AIDSDeathsARTSingleAge_V1 + AM_AIDSDeathsNoARTSingleAge_V1` |
+| **Spectrum shape (AIM tab)** | `(3, 81, n_years)` each — sex × single age × year; same shape family as `DP_BigPop_V1` |
+| **Spectrum aggregation (AIM tab)** | Sum the two death arrays, then rows 1 (male) + 2 (female) summed over all ages (or per 5-year age band when age-faceted) |
 
 Same sex-disaggregation behaviour as New HIV infections. Age disaggregation not available for Spectrum.
 
@@ -242,7 +248,8 @@ ART duration stages: 0 = <6 months, 1 = 6–12 months, 2 = >12 months. Under-15 
 | | Detail |
 |---|---|
 | **Leapfrog DP/AIM** | `p_hiv_deaths` summed over ages 15–49 |
-| **Spectrum** | `HV_AIDSDeaths_V1` (all-ages modvar; no 15–49 slice available) |
+| **Spectrum (Goals tab)** | `HV_AIDSDeaths_V1` (all-ages modvar; no 15–49 slice available) |
+| **Spectrum (AIM tab)** | `AM_AIDSDeathsARTSingleAge_V1 + AM_AIDSDeathsNoARTSingleAge_V1`, each shape `(sex=3, single_age=81, T)`, summed over ages 15–49 (male index 1 + female index 2) |
 | **Leapfrog Goals output** | `total_deaths_hiv` |
 | **Leapfrog Goals shape** | `(n_years,)` — scalar total; no sex disaggregation (always shown as single total) |
 

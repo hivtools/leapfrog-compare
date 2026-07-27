@@ -108,15 +108,15 @@ wheels = [
 
 [[package]]
 name = "avenir-spectrum-import-pjnz"
-version = "0.1.11"
+version = "0.1.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "avenir-common" },
     { name = "avenir-spectrum-common" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/78/a2/e7b187ebde3f00b2a6e67592910751af93677f12c1b10a3fc9b358aeb9c9/avenir_spectrum_import_pjnz-0.1.11.tar.gz", hash = "sha256:80ccc1ec2cd0909b273325f655766bb8158813da0bd5d004d9fe946666146235", size = 46383, upload-time = "2026-07-22T15:56:34.827Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/20/fc/33c7f50618dfce27aa40d9580cdf094f366bcf6c062df6631de5ee3296a1/avenir_spectrum_import_pjnz-0.1.12.tar.gz", hash = "sha256:42d5ce6eab2629fe3836787c1515d92bbd7464ccd2a21d655cf7e0cbb95632ae", size = 46903, upload-time = "2026-07-27T21:26:40.728Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/40/4d7d8831494b9b56b8d4eb0f06bcf6c2fef892472bf50e97926955fe022c/avenir_spectrum_import_pjnz-0.1.11-py3-none-any.whl", hash = "sha256:54d0927c9914170dc8a968e9937eff31c821ba54762085715eba62c18b4e9954", size = 49092, upload-time = "2026-07-22T15:56:35.827Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/de/5587cb124e61f5cf9aed6a4cfa3047e380fcd02dced88ce3d7b18993ea31/avenir_spectrum_import_pjnz-0.1.12-py3-none-any.whl", hash = "sha256:14c6d12546fe2835a1f98c39170c60a32eb5526859d86dc1ef32606b5492db40", size = 49591, upload-time = "2026-07-27T21:26:41.517Z" },
 ]
 
 [[package]]
@@ -620,7 +620,7 @@ wheels = [
 
 [[package]]
 name = "leapfrog-compare"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "avenir-spectrum-common" },
@@ -639,7 +639,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "avenir-spectrum-common", specifier = ">=0.1.19" },
-    { name = "avenir-spectrum-import-pjnz", specifier = ">=0.1.11" },
+    { name = "avenir-spectrum-import-pjnz", specifier = ">=0.1.12" },
     { name = "leapfrog-goals", specifier = ">=0.0.12" },
     { name = "leapfrog-py", specifier = ">=1.0.10" },
     { name = "numpy", specifier = ">=1.24" },

@@ -183,7 +183,7 @@ _AIM_CHILD_SUBTABS = [
     FacetSubTab(
         id="aim_child_cd4", label="0-14",
         indicator_names=CHILD_CD4_INDICATOR_NAMES, facet_map=CHILD_CD4_INDICATOR_MAP,
-        sources=_AIM_SOURCES, title_prefix="Child CD4 distribution",
+        sources=_AIM_SOURCES, title_prefix="Child",
     ),
 ]
 
@@ -191,7 +191,7 @@ _GOALS_CHILD_SUBTABS = [
     FacetSubTab(
         id="goals_child_cd4", label="0-14",
         indicator_names=CHILD_CD4_INDICATOR_NAMES, facet_map=CHILD_CD4_INDICATOR_MAP,
-        sources=_GOALS_CHILD_CD4_SOURCES, title_prefix="Child CD4 distribution",
+        sources=_GOALS_CHILD_CD4_SOURCES, title_prefix="Child",
         wip_note=(
             "the Spectrum comparison lines on this sub-tab (child CD4 "
             "distribution for the population plots, and single-age AIDS-death "
@@ -335,12 +335,6 @@ app_ui = ui.page_navbar(
     _build_tab_ui(
         "aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim,
         facet_subtabs=_AIM_CHILD_SUBTABS,
-        wip_note=(
-            "the Spectrum comparison uses the model run from the PJNZ inputs — "
-            "Spectrum's own output indicators, including the child (0-14) CD4 "
-            "distribution breakdown, are not yet extracted from the PJNZ. "
-            "That will be added in the future."
-        ),
     ),
     _build_tab_ui(
         "goals", "Goals", _GOALS_SUBTABS,

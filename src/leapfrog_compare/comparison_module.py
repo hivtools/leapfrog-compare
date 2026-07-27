@@ -349,6 +349,12 @@ def facet_panel_server(
         year_start, year_end = year_range()
         ind_def = facet_map[indicator]
 
+        # cd4_labels has more than one entry only for the CD4-faceted population
+        # indicators; the death indicators use a single ["Total"] row (Spectrum
+        # has no CD4-stratified child-deaths output), so the heading shouldn't
+        # claim a CD4 breakdown for those.
+        facet_desc = "CD4 distribution" if len(ind_def.cd4_labels) > 1 else "total"
+
         html = render_risk_group_comparison(
             risk_groups=[(lbl, i) for i, lbl in enumerate(ind_def.cd4_labels)],
             sources=sources,
@@ -358,6 +364,6 @@ def facet_panel_server(
             year_start=year_start,
             year_end=year_end,
             disagg_sex=input.disagg_sex(),
-            title=f"{title_prefix} — {indicator} — {pjnz_label()}",
+            title=f"{title_prefix} {facet_desc} — {indicator} — {pjnz_label()}",
         )
         return ui.HTML(html)

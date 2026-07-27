@@ -1,6 +1,6 @@
 [project]
 name = "leapfrog-compare"
-version = "0.0.3"
+version = "0.0.4"
 description = "Compare Spectrum extract output with leapfrog-goals model output"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,7 +11,7 @@ dependencies = [
     "shiny>=1.2",
     "plotly>=5.0",
     "avenir-spectrum-common>=0.1.19",
-    "avenir-spectrum-import-pjnz>=0.1.11",
+    "avenir-spectrum-import-pjnz>=0.1.12",
     "leapfrog-goals>=0.0.12",
     "shinywidgets>=0.8.1",
     "leapfrog-py>=1.0.10",

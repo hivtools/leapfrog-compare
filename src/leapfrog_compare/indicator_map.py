@@ -4,9 +4,9 @@ Indicator definitions: compute time series from Goals output and Spectrum modvar
 Each IndicatorDef holds a `disagg` dict keyed by source id (e.g. "dp_aim", "spectrum",
 "goals", "eppasm", "eppasm_lf"). Each value has signature:
   (data, disagg_age, disagg_sex) -> list[(label, 1-D ndarray)]
-A source is omitted from the dict entirely when it has no data for that indicator
-(e.g. "Total Births" has no "spectrum" key). Callers should use `.get(source_key)`
-and treat a missing key the same as an empty result.
+A source is omitted from the dict entirely when it has no data for that indicator.
+Callers should use `.get(source_key)` and treat a missing key the same as an empty
+result.
 
 Goals arrays for population-like indicators have shape (n_ages, 2, n_years):
   axis 0 = single-year ages 0-80
@@ -19,6 +19,12 @@ h_artpop shape is (4, 7, 66, 2, n_years):
 
 Spectrum modvars shapes (confirmed):
   DP_BigPop_V1              (3, 81, 81)    sex × age × year;  [0]=both, [1]=male, [2]=female
+  DP_Births_V1              (3, 18, n_years) sex × 5y-age-band × year; [0]=Both Sexes,
+                            [1]=male, [2]=female; age axis [0]="All Ages" (a genuine
+                            pre-aggregated total, distinct from the 17 5-year bands at
+                            [1..17]) — unlike DP_BigPop_V1, index 0 on *both* axes here
+                            is the correct value to read directly (see GetDP_Births in
+                            SpectrumEngine's DPUtil.py), not a value to recompute
   HV_NewInfections_V1       (3, K, M, 81)  sex × risk_grp × vaccine_state × year; [0]=both, [1]=male, [2]=female
   HV_AIDSDeaths_V1          same structure as HV_NewInfections_V1
   HV_TotalAdultsHIV_V1      (3, 81)        sex × year;  [0]=both, [1]=male, [2]=female
@@ -26,8 +32,9 @@ Spectrum modvars shapes (confirmed):
   HV_CalcPrevalence_V1      (3, 11, 81)    sex × risk_grp × year; [0]=both, [1]=male, [2]=female
   HV_Incidence_V1           (81,)          rate per year (×100 → percent) — no sex disaggregation
 
-For all modvars with a sex first-dimension, index 0 ("both") is a pre-computed total that we
-do NOT use. Totals are always produced by manually summing indices 1 (male) + 2 (female).
+For all modvars with a sex first-dimension EXCEPT DP_Births_V1, index 0 ("both") is a
+pre-computed total that we do NOT use. Totals are always produced by manually summing
+indices 1 (male) + 2 (female).
 """
 
 from __future__ import annotations
@@ -41,7 +48,6 @@ import numpy as np
 
 from SpectrumCommon.Const.AM.AMTags import (  # type: ignore[import-untyped]
     AM_AIDSDeathsARTSingleAgeTag,
-    AM_AIDSDeathsByAgeTag,
     AM_AIDSDeathsNoARTSingleAgeTag,
     AM_CD4DistributionChildTag,
     AM_HIVBySingleAgeTag,
@@ -49,6 +55,7 @@ from SpectrumCommon.Const.AM.AMTags import (  # type: ignore[import-untyped]
     AM_OnARTBySingleAgeTag,
 )
 from SpectrumCommon.Const.DP.DPConst import (  # type: ignore[import-untyped]
+    DP_AllAges,
     DP_CD4_0t4,
     DP_CD4_5t14,
     DP_CD4_Ped_GT1000,
@@ -58,7 +65,11 @@ from SpectrumCommon.Const.DP.DPConst import (  # type: ignore[import-untyped]
     DP_OnART,
     DP_P_Perinatal,
 )
-from SpectrumCommon.Const.DP.DPTags import DP_BigPopTag  # type: ignore[import-untyped]
+from SpectrumCommon.Const.DP.DPTags import (  # type: ignore[import-untyped]
+    DP_BigPopTag,
+    DP_BirthsTag,
+)
+from SpectrumCommon.Const.GB.GBConst import GB_BothSexes  # type: ignore[import-untyped]
 from SpectrumCommon.Const.HV.HVTags import (  # type: ignore[import-untyped]
     HV_AdultsTag,
     HV_AIDSDeathsTag,
@@ -247,6 +258,16 @@ def _disagg_incidence() -> Callable:
 # Spectrum (modvars) extract functions — totals
 # ---------------------------------------------------------------------------
 
+def _spec_births_disagg(modvars: dict, _disagg_age: bool, _disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """DP_Births_V1 (3, 18, n_years): sex × 5-year age band × year. Unlike
+    DP_BigPop_V1, index 0 on both axes ('Both Sexes' / 'All Ages') is a genuine
+    pre-aggregated total meant to be read directly — mirrors SpectrumEngine's
+    own GetDP_Births(modvars, t) accessor. No sex or age disaggregation
+    available (births has no per-sex breakdown to split by)."""
+    arr = np.array(modvars[DP_BirthsTag])
+    return [("Total", arr[GB_BothSexes, DP_AllAges, :])]
+
+
 def _spec_prevalence_1549_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
     """Prevalence (%) computed as HV_TotalAdultsHIV_V1 / HV_Populations_V1 (both (3, 81)
     sex x year), matching how the dp_aim/goals columns derive prevalence as a ratio
@@ -307,16 +328,17 @@ def _am_incidence_1549_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool
 # Spectrum disaggregated (age + sex) extract functions
 # ---------------------------------------------------------------------------
 
-def _am_disagg(tag) -> Callable:
-    """Disagg factory for any modvar sharing DP_BigPop_V1's (3, 81, 81) [sex, age,
-    year] shape — [0]=both, [1]=male, [2]=female. Totals are always male+female
-    (index 1+2), never the pre-computed 'both' row. Used both for DP_BigPop_V1
-    itself (Total population, same for both the Goals and AIM tabs) and for the
-    AM_* modvars that back the AIM tab's DP/AIM-derived comparisons (as opposed
-    to the Goals tab's HV_*-based "spectrum" functions — HV_* tags are Goals-
-    specific and aren't populated by a plain AIM-only Spectrum run)."""
+def _am_disagg_from_array(get_arr: Callable[[dict], np.ndarray]) -> Callable:
+    """Disagg factory for any modvar (or derived array) sharing DP_BigPop_V1's
+    (3, 81, 81) [sex, age, year] shape — [0]=both, [1]=male, [2]=female. Totals
+    are always male+female (index 1+2), never the pre-computed 'both' row.
+    Used both for DP_BigPop_V1 itself (Total population, same for both the
+    Goals and AIM tabs) and for the AM_* modvars that back the AIM tab's
+    DP/AIM-derived comparisons (as opposed to the Goals tab's HV_*-based
+    "spectrum" functions — HV_* tags are Goals-specific and aren't populated
+    by a plain AIM-only Spectrum run)."""
     def fn(modvars: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
-        arr = np.array(modvars[tag])  # (3, 81_ages, 81_years)
+        arr = get_arr(modvars)  # (3, 81_ages, 81_years)
 
         if disagg_age:
             age_items = [(lbl, slice(a, b + 1)) for (a, b), lbl in zip(AGE_GROUPS, AGE_LABELS)]
@@ -337,11 +359,22 @@ def _am_disagg(tag) -> Callable:
     return fn
 
 
+def _am_disagg(tag) -> Callable:
+    """_am_disagg_from_array, reading a single modvar tag directly."""
+    return _am_disagg_from_array(lambda modvars: np.array(modvars[tag]))
+
+
 _spec_totpop_disagg = _am_disagg(DP_BigPopTag)
 _am_hivpop_disagg = _am_disagg(AM_HIVBySingleAgeTag)
 _am_newinf_disagg = _am_disagg(AM_NewInfectionsBySingleAgeTag)
-_am_aidsdeath_disagg = _am_disagg(AM_AIDSDeathsByAgeTag)
 _am_art_disagg = _am_disagg(AM_OnARTBySingleAgeTag)
+
+# AIDS deaths (all ages) for the AIM tab, derived as AM_AIDSDeathsARTSingleAgeTag +
+# AM_AIDSDeathsNoARTSingleAgeTag — both share DP_BigPop_V1's (sex=3, single_age=81, T)
+# shape, so the same age/sex disaggregation logic applies directly.
+_am_aidsdeath_disagg = _am_disagg_from_array(
+    lambda modvars: np.array(modvars[AM_AIDSDeathsARTSingleAgeTag]) + np.array(modvars[AM_AIDSDeathsNoARTSingleAgeTag])
+)
 
 
 def _spec_newinf_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
@@ -494,8 +527,23 @@ def _am_disagg_1549(tag) -> Callable:
 _spec_totpop_1549_disagg = _am_disagg_1549(DP_BigPopTag)
 _am_hivpop_1549_disagg = _am_disagg_1549(AM_HIVBySingleAgeTag)
 _am_newinf_1549_disagg = _am_disagg_1549(AM_NewInfectionsBySingleAgeTag)
-_am_aidsdeath_1549_disagg = _am_disagg_1549(AM_AIDSDeathsByAgeTag)
 _am_art_1549_disagg = _am_disagg_1549(AM_OnARTBySingleAgeTag)
+
+
+def _am_aidsdeath_1549_disagg(modvars: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """AIDS deaths (15-49) for the AIM tab, derived as AM_AIDSDeathsARTSingleAgeTag +
+    AM_AIDSDeathsNoARTSingleAgeTag summed over ages 15-49 (each shape (sex=3,
+    single_age=81, T); index 0='both' unused, always sum male(1)+female(2)
+    manually — same convention as the rest of this module's AM_* handling)."""
+    if disagg_age:
+        return []
+    total = np.array(modvars[AM_AIDSDeathsARTSingleAgeTag]) + np.array(modvars[AM_AIDSDeathsNoARTSingleAgeTag])
+    if disagg_sex:
+        return [
+            ("Male", total[1, 15:50, :].sum(axis=0)),
+            ("Female", total[2, 15:50, :].sum(axis=0)),
+        ]
+    return [("15-49", (total[1, 15:50, :] + total[2, 15:50, :]).sum(axis=0))]
 
 
 # ---------------------------------------------------------------------------
@@ -895,7 +943,8 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
     })),
     ("Total Births", IndicatorDef(disagg={
         "dp_aim": lambda o, _da, _ds: [("Total", o["births"])],
-        # no "spectrum"/"spectrum_aim" key: DP_Births all-zeros in test files
+        "spectrum": _spec_births_disagg,
+        "spectrum_aim": _spec_births_disagg,
     })),
     ("HIV population", IndicatorDef(disagg={
         "dp_aim": _disagg_std("p_hivpop"),
