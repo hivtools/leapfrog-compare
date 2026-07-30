@@ -23,7 +23,9 @@ from typing import Any, Callable
 from shiny import module, reactive, render, ui
 
 from leapfrog_compare.indicator_map import CD4_LABELS_HC1, CD4_LABELS_HC2
-from leapfrog_compare.plotting import ComparisonSource, render_comparison, render_risk_group_comparison
+from leapfrog_compare.plotting import (
+    ComparisonSource, render_age_profile, render_comparison, render_risk_group_comparison,
+)
 
 # (data_by_source, output_years)
 RunFn = Callable[[Path], tuple[dict[str, Any], range]]
@@ -303,6 +305,106 @@ def risk_group_panel_server(
             year_end=year_end,
             disagg_sex=disagg_sex,
             title=f"{title_prefix} — {pjnz_label()}",
+        )
+        return ui.HTML(html)
+
+
+# ---------------------------------------------------------------------------
+# Age-profile panel: indicator multiselect (same pattern as plot_panel_ui) +
+# a year dropdown (instead of the shared year-range slider) driving a rendered
+# plot with single-year-of-age on the x-axis and one line per (source, sex),
+# one row per selected indicator — see plotting.render_age_profile. Used by
+# the AIM/Goals tabs' "By age" sub-tabs.
+# ---------------------------------------------------------------------------
+
+@module.ui
+def age_profile_panel_ui(
+    *,
+    indicator_names: list[str],
+    default_indicators: list[str],
+    year_min: int,
+    year_max: int,
+):
+    years = [str(y) for y in range(year_min, year_max + 1)]
+    return ui.div(
+        ui.input_selectize(
+            "indicators",
+            label="Indicators",
+            choices=indicator_names,
+            multiple=True,
+            selected=default_indicators,
+            options={"plugins": ["remove_button"]},
+        ),
+        ui.input_selectize(
+            "year",
+            label="Year",
+            choices=years,
+            selected=years[-1] if years else None,
+        ),
+        ui.div(
+            ui.output_ui("comparison_plot"),
+            style="overflow-x: auto; overflow-y: auto;",
+        ),
+        style="padding-top: 12px;",
+    )
+
+
+@module.server
+def age_profile_panel_server(
+    input,
+    output,
+    session,
+    *,
+    data_run: Callable[[], tuple],
+    pjnz_label: Callable[[], str],
+    indicator_map: dict[str, Any],
+    sources: list[ComparisonSource],
+    title_prefix: str = "By age",
+    no_pjnz_message: str = "No PJNZ files found, check 'PJNZ_DIR' in 'config.py'.",
+):
+    @reactive.effect
+    def _update_year_choices():
+        result, _ = data_run()
+        if result is None:
+            return
+        _, output_years = result
+        years = [str(y) for y in output_years]
+        with reactive.isolate():
+            current = input.year()
+        selected = current if current in years else (years[-1] if years else None)
+        ui.update_selectize("year", choices=years, selected=selected)
+
+    @output
+    @render.ui
+    def comparison_plot():
+        result, error = data_run()
+        if result is None:
+            if error:
+                return ui.div(
+                    ui.p(
+                        f"Error running model for '{pjnz_label()}':",
+                        style="font-weight:bold; color:#c0392b; margin-bottom:4px;",
+                    ),
+                    ui.pre(error, style="white-space:pre-wrap; color:#c0392b; font-size:0.85em;"),
+                )
+            return ui.p(no_pjnz_message)
+
+        selected_indicators = input.indicators()
+        year_str = input.year()
+        if not selected_indicators:
+            return ui.p("Select at least one indicator.")
+        if not year_str:
+            return ui.p("Select a year.")
+
+        data_by_source, output_years = result
+        html = render_age_profile(
+            indicator_map=indicator_map,
+            data_by_source=data_by_source,
+            sources=sources,
+            selected_indicators=selected_indicators,
+            output_years=output_years,
+            year=int(year_str),
+            title=f"{title_prefix} — {year_str} — {pjnz_label()}",
         )
         return ui.HTML(html)
 

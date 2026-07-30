@@ -40,7 +40,7 @@ indices 1 (male) + 2 (female).
 from __future__ import annotations
 
 import leapfrog_compare.config  # noqa: F401 — ensures SpectrumCommon is on sys.path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import OrderedDict
 from typing import Callable
 
@@ -102,6 +102,14 @@ AGE_LABELS: list[str] = [
 ]
 SEX_LABELS = ["Male", "Female"]
 
+# Single-year ages 0-80 — the actual resolution of the underlying arrays
+# (dp_aim's p_* keys and the AM_*BySingleAge* modvars are indexed by single
+# year of age already; AGE_GROUPS above is only a 5-year *display* bucketing
+# used by the age-facet grid). Used by the "By age" sub-tab, which plots the
+# full single-year age profile rather than re-bucketing into 5-year groups.
+AGE_GROUPS_SINGLE: list[tuple[int, int]] = [(a, a) for a in range(81)]
+AGE_LABELS_SINGLE: list[str] = [str(a) for a in range(81)]
+
 # CD4 stages for the pediatric age bands (hc1 = 0-4, hc2 = 5-14), fixed order
 # matching leapfrog's hc1DS/hc2DS array index 0..N-1.
 CD4_LABELS_HC1: list[str] = [
@@ -133,16 +141,24 @@ def _sum_std(arr: np.ndarray, age_slice: slice | None = None, sex: int | None = 
     return arr.reshape(-1, arr.shape[-1]).sum(axis=0)
 
 
-def _disagg_std(key: str) -> Callable:
+def _disagg_std(
+    key: str,
+    *,
+    age_groups: list[tuple[int, int]] = AGE_GROUPS,
+    age_labels: list[str] = AGE_LABELS,
+) -> Callable:
     """
     Return a disaggregation function for a Goals array with shape (81, 2, n_years).
+    `age_groups`/`age_labels` default to the 5-year display buckets; pass
+    AGE_GROUPS_SINGLE/AGE_LABELS_SINGLE for single-year-of-age resolution
+    (the "By age" sub-tab's age_profile disagg functions).
     """
     def fn(output: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
         arr = output[key]
         series: list[tuple[str, np.ndarray]] = []
 
         age_specs: list[tuple[str | None, slice | None]] = (
-            [(label, slice(a, b + 1)) for (a, b), label in zip(AGE_GROUPS, AGE_LABELS)]
+            [(label, slice(a, b + 1)) for (a, b), label in zip(age_groups, age_labels)]
             if disagg_age else [(None, None)]
         )
         sex_specs: list[tuple[str | None, int | None]] = (
@@ -160,11 +176,17 @@ def _disagg_std(key: str) -> Callable:
     return fn
 
 
-def _disagg_art() -> Callable:
+def _disagg_art(
+    *,
+    age_groups: list[tuple[int, int]] = AGE_GROUPS,
+    age_labels: list[str] = AGE_LABELS,
+) -> Callable:
     """
     Disaggregation for h_artpop (4, 7, 66, 2, n_years): adult ages 15-80, sex axis=3.
     Age axis index 0 = age 15, index i = age 15+i.
     Under-15 age groups return zeros (no adult ART data below age 15).
+    `age_groups`/`age_labels` default to the 5-year display buckets; pass
+    AGE_GROUPS_SINGLE/AGE_LABELS_SINGLE for single-year-of-age resolution.
     """
     def fn(output: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
         arr = output["h_artpop"]  # (4, 7, 66, 2, n_years)
@@ -173,7 +195,7 @@ def _disagg_art() -> Callable:
 
         if disagg_age:
             age_items: list[tuple[str, slice | None]] = []
-            for (a, b), lbl in zip(AGE_GROUPS, AGE_LABELS):
+            for (a, b), lbl in zip(age_groups, age_labels):
                 if b < 15:
                     age_items.append((lbl, None))  # under-15: no data in h_artpop
                 else:
@@ -328,7 +350,12 @@ def _am_incidence_1549_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool
 # Spectrum disaggregated (age + sex) extract functions
 # ---------------------------------------------------------------------------
 
-def _am_disagg_from_array(get_arr: Callable[[dict], np.ndarray]) -> Callable:
+def _am_disagg_from_array(
+    get_arr: Callable[[dict], np.ndarray],
+    *,
+    age_groups: list[tuple[int, int]] = AGE_GROUPS,
+    age_labels: list[str] = AGE_LABELS,
+) -> Callable:
     """Disagg factory for any modvar (or derived array) sharing DP_BigPop_V1's
     (3, 81, 81) [sex, age, year] shape — [0]=both, [1]=male, [2]=female. Totals
     are always male+female (index 1+2), never the pre-computed 'both' row.
@@ -336,12 +363,14 @@ def _am_disagg_from_array(get_arr: Callable[[dict], np.ndarray]) -> Callable:
     Goals and AIM tabs) and for the AM_* modvars that back the AIM tab's
     DP/AIM-derived comparisons (as opposed to the Goals tab's HV_*-based
     "spectrum" functions — HV_* tags are Goals-specific and aren't populated
-    by a plain AIM-only Spectrum run)."""
+    by a plain AIM-only Spectrum run). `age_groups`/`age_labels` default to the
+    5-year display buckets; pass AGE_GROUPS_SINGLE/AGE_LABELS_SINGLE for
+    single-year-of-age resolution (the "By age" sub-tab)."""
     def fn(modvars: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
         arr = get_arr(modvars)  # (3, 81_ages, 81_years)
 
         if disagg_age:
-            age_items = [(lbl, slice(a, b + 1)) for (a, b), lbl in zip(AGE_GROUPS, AGE_LABELS)]
+            age_items = [(lbl, slice(a, b + 1)) for (a, b), lbl in zip(age_groups, age_labels)]
         else:
             age_items = [(None, slice(None))]
 
@@ -359,9 +388,14 @@ def _am_disagg_from_array(get_arr: Callable[[dict], np.ndarray]) -> Callable:
     return fn
 
 
-def _am_disagg(tag) -> Callable:
+def _am_disagg(
+    tag,
+    *,
+    age_groups: list[tuple[int, int]] = AGE_GROUPS,
+    age_labels: list[str] = AGE_LABELS,
+) -> Callable:
     """_am_disagg_from_array, reading a single modvar tag directly."""
-    return _am_disagg_from_array(lambda modvars: np.array(modvars[tag]))
+    return _am_disagg_from_array(lambda modvars: np.array(modvars[tag]), age_groups=age_groups, age_labels=age_labels)
 
 
 _spec_totpop_disagg = _am_disagg(DP_BigPopTag)
@@ -374,6 +408,24 @@ _am_art_disagg = _am_disagg(AM_OnARTBySingleAgeTag)
 # shape, so the same age/sex disaggregation logic applies directly.
 _am_aidsdeath_disagg = _am_disagg_from_array(
     lambda modvars: np.array(modvars[AM_AIDSDeathsARTSingleAgeTag]) + np.array(modvars[AM_AIDSDeathsNoARTSingleAgeTag])
+)
+
+# ---------------------------------------------------------------------------
+# Single-year-of-age variants for the "By age" sub-tab (see IndicatorDef.age_profile
+# below). Same underlying arrays/logic as the 5-year-bucketed versions above,
+# just called with AGE_GROUPS_SINGLE/AGE_LABELS_SINGLE instead of the display
+# bucketing, since the raw data is single-year resolution already.
+# ---------------------------------------------------------------------------
+_disagg_std_single_age = lambda key: _disagg_std(key, age_groups=AGE_GROUPS_SINGLE, age_labels=AGE_LABELS_SINGLE)
+_disagg_art_single_age = _disagg_art(age_groups=AGE_GROUPS_SINGLE, age_labels=AGE_LABELS_SINGLE)
+
+_spec_totpop_disagg_single = _am_disagg(DP_BigPopTag, age_groups=AGE_GROUPS_SINGLE, age_labels=AGE_LABELS_SINGLE)
+_am_hivpop_disagg_single = _am_disagg(AM_HIVBySingleAgeTag, age_groups=AGE_GROUPS_SINGLE, age_labels=AGE_LABELS_SINGLE)
+_am_newinf_disagg_single = _am_disagg(AM_NewInfectionsBySingleAgeTag, age_groups=AGE_GROUPS_SINGLE, age_labels=AGE_LABELS_SINGLE)
+_am_art_disagg_single = _am_disagg(AM_OnARTBySingleAgeTag, age_groups=AGE_GROUPS_SINGLE, age_labels=AGE_LABELS_SINGLE)
+_am_aidsdeath_disagg_single = _am_disagg_from_array(
+    lambda modvars: np.array(modvars[AM_AIDSDeathsARTSingleAgeTag]) + np.array(modvars[AM_AIDSDeathsNoARTSingleAgeTag]),
+    age_groups=AGE_GROUPS_SINGLE, age_labels=AGE_LABELS_SINGLE,
 )
 
 
@@ -906,6 +958,14 @@ CHILD_CD4_INDICATOR_MAP: OrderedDict[str, ChildCD4IndicatorDef] = OrderedDict([
 @dataclass
 class IndicatorDef:
     disagg: dict[str, Callable[[dict, bool, bool], list[tuple[str, np.ndarray]]]]
+    # Single-year-of-age disagg functions for the "By age" sub-tab, same 3-arg
+    # (data, disagg_age, disagg_sex) shape as `disagg` — only populated for
+    # indicators whose underlying arrays actually carry single-year age
+    # resolution (see the "_*_single" functions above). A missing source key
+    # (or a missing/empty dict entirely) means that source has no age-resolved
+    # data for this indicator and is skipped in the "By age" view, same
+    # missing-key convention as `disagg`.
+    age_profile: dict[str, Callable[[dict, bool, bool], list[tuple[str, np.ndarray]]]] = field(default_factory=dict)
 
 
 def _as_full_disagg(fn: Callable[[dict, bool], list[tuple[str, np.ndarray]]]) -> Callable:
@@ -936,36 +996,79 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
     # based) is used by the AIM tab, since HV_* modvars are Goals-specific and
     # aren't populated by a plain AIM-only Spectrum run. DP_BigPop_V1 (Total
     # population) is identical for both, so both keys point at the same function.
-    ("Total population", IndicatorDef(disagg={
-        "dp_aim": _disagg_std("p_totpop"),
-        "spectrum": _spec_totpop_disagg,
-        "spectrum_aim": _spec_totpop_disagg,
-    })),
+    ("Total population", IndicatorDef(
+        disagg={
+            "dp_aim": _disagg_std("p_totpop"),
+            "spectrum": _spec_totpop_disagg,
+            "spectrum_aim": _spec_totpop_disagg,
+        },
+        # DP_BigPopTag (unlike the HV_* modvars below) isn't Goals-specific, so
+        # "spectrum" has real single-age data here too, same as "spectrum_aim".
+        age_profile={
+            "dp_aim": _disagg_std_single_age("p_totpop"),
+            "spectrum": _spec_totpop_disagg_single,
+            "spectrum_aim": _spec_totpop_disagg_single,
+        },
+    )),
     ("Total Births", IndicatorDef(disagg={
         "dp_aim": lambda o, _da, _ds: [("Total", o["births"])],
         "spectrum": _spec_births_disagg,
         "spectrum_aim": _spec_births_disagg,
     })),
-    ("HIV population", IndicatorDef(disagg={
-        "dp_aim": _disagg_std("p_hivpop"),
-        "spectrum": _spec_hivpop_disagg,
-        "spectrum_aim": _am_hivpop_disagg,
-    })),
-    ("New HIV infections", IndicatorDef(disagg={
-        "dp_aim": _disagg_std("p_infections"),
-        "spectrum": _spec_newinf_disagg,
-        "spectrum_aim": _am_newinf_disagg,
-    })),
-    ("AIDS deaths", IndicatorDef(disagg={
-        "dp_aim": _disagg_std("p_hiv_deaths"),
-        "spectrum": _spec_aidsdeath_disagg,
-        "spectrum_aim": _am_aidsdeath_disagg,
-    })),
-    ("Total number receiving ART (15+)", IndicatorDef(disagg={
-        "dp_aim": _disagg_art(),
-        "spectrum": _spec_art_disagg,
-        "spectrum_aim": _am_art_disagg,
-    })),
+    ("HIV population", IndicatorDef(
+        disagg={
+            "dp_aim": _disagg_std("p_hivpop"),
+            "spectrum": _spec_hivpop_disagg,
+            "spectrum_aim": _am_hivpop_disagg,
+        },
+        # "spectrum" (Goals tab) here means the same raw Spectrum `modvars` dict
+        # as "spectrum_aim" (see _goals_run_fn in app.py) — HV_TotalAdultsHIV_V1
+        # itself has no age axis (hence `disagg`'s "spectrum" entry above uses
+        # a no-age HV_* function), but the AM_HIVBySingleAge_V1 modvar backing
+        # "spectrum_aim" is populated for Goals-classified PJNZ runs too, with
+        # values matching dp_aim's p_hivpop closely — so reuse it here.
+        age_profile={
+            "dp_aim": _disagg_std_single_age("p_hivpop"),
+            "spectrum": _am_hivpop_disagg_single,
+            "spectrum_aim": _am_hivpop_disagg_single,
+        },
+    )),
+    ("New HIV infections", IndicatorDef(
+        disagg={
+            "dp_aim": _disagg_std("p_infections"),
+            "spectrum": _spec_newinf_disagg,
+            "spectrum_aim": _am_newinf_disagg,
+        },
+        age_profile={
+            "dp_aim": _disagg_std_single_age("p_infections"),
+            "spectrum": _am_newinf_disagg_single,
+            "spectrum_aim": _am_newinf_disagg_single,
+        },
+    )),
+    ("AIDS deaths", IndicatorDef(
+        disagg={
+            "dp_aim": _disagg_std("p_hiv_deaths"),
+            "spectrum": _spec_aidsdeath_disagg,
+            "spectrum_aim": _am_aidsdeath_disagg,
+        },
+        age_profile={
+            "dp_aim": _disagg_std_single_age("p_hiv_deaths"),
+            "spectrum": _am_aidsdeath_disagg_single,
+            "spectrum_aim": _am_aidsdeath_disagg_single,
+        },
+    )),
+    ("Total number receiving ART (15+)", IndicatorDef(
+        disagg={
+            "dp_aim": _disagg_art(),
+            "spectrum": _spec_art_disagg,
+            "spectrum_aim": _am_art_disagg,
+        },
+        age_profile={
+            "dp_aim": _disagg_art_single_age,
+            "spectrum": _am_art_disagg_single,
+            "spectrum_aim": _am_art_disagg_single,
+        },
+    )),
 
     # --- 15-49 indicators: all three sources; age disagg disabled ---
     ("Total population (15-49)", IndicatorDef(disagg={
@@ -1023,6 +1126,12 @@ FIFTEEN_49_INDICATOR_NAMES: list[str] = [
     "Total population (15-49)", "Total PLHIV (15-49)", "New HIV infections (15-49)",
     "AIDS deaths (15-49)", "Prevalence (15-49) (%)", "Incidence (15-49) (%)",
     "Total on ART (15-49)",
+]
+# Indicators with a real single-year-of-age breakdown available (i.e. a
+# non-empty `age_profile` dict) — populates the "By age" sub-tab's indicator
+# multiselect. "Total Births" is excluded: DP_Births_V1 has no age or sex axis.
+AGE_PROFILE_INDICATOR_NAMES: list[str] = [
+    name for name in ALL_AGES_INDICATOR_NAMES if INDICATOR_MAP[name].age_profile
 ]
 
 

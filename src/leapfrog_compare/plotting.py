@@ -18,6 +18,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from leapfrog_compare import series_utils
+from leapfrog_compare.indicator_map import AGE_LABELS_SINGLE
 
 _PALETTE = [
     "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -181,6 +182,7 @@ def render_comparison(
             width=fig_width,
             height=fig_height,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            hoverlabel=dict(namelength=-1),
             title_text=title,
             margin=dict(t=80, b=60, l=60, r=120),
             plot_bgcolor="white",
@@ -222,6 +224,82 @@ def render_comparison(
     fig.update_layout(
         height=fig_height,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hoverlabel=dict(namelength=-1),
+        title_text=title,
+        margin=dict(t=80, b=40, l=60, r=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+
+
+def render_age_profile(
+    *,
+    indicator_map: dict[str, Any],
+    data_by_source: dict[str, Any],
+    sources: list[ComparisonSource],
+    selected_indicators: list[str],
+    output_years: range,
+    year: int,
+    title: str,
+) -> str:
+    """Single-year age profile: one row per selected indicator, x-axis = single
+    year of age (0-80), one line per (source, sex). Reuses each source's
+    `indicator_map[indicator].age_profile` disagg function (same 3-arg
+    (data, disagg_age, disagg_sex) shape as the regular `disagg` dict, just at
+    single-year-of-age resolution instead of the 5-year display buckets) called
+    with both flags True, then slices out the one requested year. A source with
+    no age_profile entry for an indicator (e.g. Goals-tab "spectrum", which has
+    no per-age breakdown for most HV_* modvars) is silently skipped, same
+    missing-key convention as render_comparison."""
+    first_year = int(min(output_years))
+    year_idx = year - first_year
+    ages = [int(a) for a in AGE_LABELS_SINGLE]
+    age_label_set = set(AGE_LABELS_SINGLE)
+    n_inds = len(selected_indicators)
+
+    _add_trace = _make_trace_helpers(line_width=2)
+    fig = make_subplots(
+        rows=n_inds,
+        cols=1,
+        subplot_titles=list(selected_indicators),
+        shared_xaxes=False,
+        vertical_spacing=max(0.04, 0.3 / max(n_inds, 1)),
+    )
+
+    for ind_idx, indicator in enumerate(selected_indicators):
+        row = ind_idx + 1
+        ind_def = indicator_map[indicator]
+
+        for source in sources:
+            fn = ind_def.age_profile.get(source.key)
+            data = data_by_source.get(source.key)
+            if fn is None or data is None:
+                continue
+            try:
+                all_series = fn(data, True, True)
+            except Exception as exc:
+                print(f"[plotting] {source.key} age-profile disagg failed for {indicator}: {exc}")
+                continue
+            if not series_utils.has_age_labels(all_series, age_label_set):
+                continue
+
+            by_sex: dict[str, list[float | None]] = {}
+            for age_label in AGE_LABELS_SINGLE:
+                for sex_label, values in series_utils.series_for_age_cell(all_series, age_label):
+                    y = float(values[year_idx]) if 0 <= year_idx < len(values) else None
+                    by_sex.setdefault(sex_label, []).append(y)
+
+            for sex_label, y_values in by_sex.items():
+                _add_trace(fig, ages, y_values, _trace_label(source, sex_label), sex_label, source.dash, row, 1)
+
+    fig.update_xaxes(showgrid=True, gridcolor="#e5e5e5", title_text="Age", dtick=5)
+    fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
+
+    fig.update_layout(
+        height=max(400, n_inds * 300),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hoverlabel=dict(namelength=-1),
         title_text=title,
         margin=dict(t=80, b=40, l=60, r=20),
         plot_bgcolor="white",
@@ -292,6 +370,7 @@ def render_risk_group_comparison(
     fig.update_layout(
         height=max(500, n_rg * 250),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hoverlabel=dict(namelength=-1),
         title_text=title,
         margin=dict(t=80, b=40, l=60, r=20),
         plot_bgcolor="white",

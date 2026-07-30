@@ -5,7 +5,7 @@ Usage:
     uv run shiny run app.py
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -13,8 +13,9 @@ from shiny import App, reactive, ui
 
 import leapfrog_compare.config as config
 from leapfrog_compare.comparison_module import (
-    data_panel_server, data_panel_ui, facet_panel_server, facet_panel_ui,
-    plot_panel_server, plot_panel_ui, risk_group_panel_server, risk_group_panel_ui,
+    age_profile_panel_server, age_profile_panel_ui, data_panel_server, data_panel_ui,
+    facet_panel_server, facet_panel_ui, plot_panel_server, plot_panel_ui,
+    risk_group_panel_server, risk_group_panel_ui,
 )
 from leapfrog_compare.eppasm_indicator_map import (
     EPPASM_ALL_AGES_INDICATOR_NAMES, EPPASM_FIFTEEN_49_INDICATOR_NAMES,
@@ -22,7 +23,7 @@ from leapfrog_compare.eppasm_indicator_map import (
 )
 from leapfrog_compare.eppasm_runner import run_eppasm_both
 from leapfrog_compare.indicator_map import (
-    AGE_LABELS, ALL_AGES_INDICATOR_NAMES, CHILD_CD4_INDICATOR_MAP,
+    AGE_LABELS, AGE_PROFILE_INDICATOR_NAMES, ALL_AGES_INDICATOR_NAMES, CHILD_CD4_INDICATOR_MAP,
     CHILD_CD4_INDICATOR_NAMES, FIFTEEN_49_INDICATOR_NAMES, INDICATOR_MAP,
     RISK_GROUPS, compute_new_infections_rg_goals, compute_new_infections_rg_spectrum,
     compute_rg_goals, compute_rg_spectrum,
@@ -171,6 +172,25 @@ class FacetSubTab:
     wip_note: str | None = None
 
 
+@dataclass
+class AgeProfileSubTab:
+    """A sub-tab with a single-year-of-age profile: an indicator multiselect
+    (same pattern as SubTab) + a year dropdown (instead of the shared
+    year-range slider) driving one plot per selected indicator, each with age
+    (0-80) on the x-axis and one line per (source, sex) — see
+    comparison_module.age_profile_panel_ui/server and plotting.render_age_profile.
+    Only sources whose `IndicatorDef.age_profile` actually has an entry for a
+    given indicator contribute a line (e.g. on the Goals tab, most indicators
+    only have single-age data via dp_aim; spectrum/goals mostly do not)."""
+    id: str
+    label: str
+    indicator_map: dict
+    sources: list[ComparisonSource]
+    indicator_names: list[str] = field(default_factory=lambda: AGE_PROFILE_INDICATOR_NAMES)
+    default_indicators: list[str] = field(default_factory=lambda: AGE_PROFILE_INDICATOR_NAMES[:3])
+    title_prefix: str = "By age"
+
+
 _GOALS_RISKGROUP_SOURCES = [
     ComparisonSource(key="goals", label="Leapfrog Goals", dash=None),
     ComparisonSource(key="spectrum", label="Spectrum", dash="dash"),
@@ -231,6 +251,20 @@ _AIM_CHILD_SUBTABS = [
     ),
 ]
 
+_AIM_AGEPROFILE_SUBTABS = [
+    AgeProfileSubTab(
+        id="aim_age_profile", label="By age",
+        indicator_map=INDICATOR_MAP, sources=_AIM_SOURCES,
+    ),
+]
+
+_GOALS_AGEPROFILE_SUBTABS = [
+    AgeProfileSubTab(
+        id="goals_age_profile", label="By age",
+        indicator_map=INDICATOR_MAP, sources=_GOALS_SOURCES,
+    ),
+]
+
 _GOALS_CHILD_SUBTABS = [
     FacetSubTab(
         id="goals_child_cd4", label="0-14",
@@ -279,6 +313,7 @@ def _build_tab_ui(
     show_rerun_button: bool = False,
     risk_group_subtabs: list[RiskGroupSubTab] = (),
     facet_subtabs: list[FacetSubTab] = (),
+    age_profile_subtabs: list[AgeProfileSubTab] = (),
     wip_note: str | None = None,
 ):
     banner = [_wip_banner(wip_note)] if wip_note else []
@@ -314,6 +349,17 @@ def _build_tab_ui(
                     facet_panel_ui(ft.id, indicator_names=ft.indicator_names),
                 )
                 for ft in facet_subtabs
+            ], *[
+                ui.nav_panel(
+                    apt.label,
+                    age_profile_panel_ui(
+                        apt.id,
+                        indicator_names=apt.indicator_names,
+                        default_indicators=apt.default_indicators,
+                        year_min=_DEFAULT_YEAR_MIN, year_max=_DEFAULT_YEAR_MAX,
+                    ),
+                )
+                for apt in age_profile_subtabs
             ]),
             fillable=True,
         ),
@@ -329,6 +375,7 @@ def _wire_tab_server(
     show_rerun_button: bool = False,
     risk_group_subtabs: list[RiskGroupSubTab] = (),
     facet_subtabs: list[FacetSubTab] = (),
+    age_profile_subtabs: list[AgeProfileSubTab] = (),
 ):
     data_run, year_range, pjnz_label = data_panel_server(
         top_id, pjnz_files=pjnz_files, pjnz_choices=pjnz_choices,
@@ -366,17 +413,26 @@ def _wire_tab_server(
             sources=ft.sources,
             title_prefix=ft.title_prefix,
         )
+    for apt in age_profile_subtabs:
+        age_profile_panel_server(
+            apt.id,
+            data_run=data_run,
+            pjnz_label=pjnz_label,
+            indicator_map=apt.indicator_map,
+            sources=apt.sources,
+            title_prefix=apt.title_prefix,
+        )
 
 
 app_ui = ui.page_navbar(
     _build_tab_ui(
         "aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim_initial,
-        facet_subtabs=_AIM_CHILD_SUBTABS,
+        facet_subtabs=_AIM_CHILD_SUBTABS, age_profile_subtabs=_AIM_AGEPROFILE_SUBTABS,
     ),
     _build_tab_ui(
         "goals", "Goals", _GOALS_SUBTABS,
         pjnz_choices=_pjnz_stems_goals_initial, risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS,
-        facet_subtabs=_GOALS_CHILD_SUBTABS,
+        facet_subtabs=_GOALS_CHILD_SUBTABS, age_profile_subtabs=_GOALS_AGEPROFILE_SUBTABS,
     ),
     _build_tab_ui(
         "eppasm", "EPPASM", _EPPASM_SUBTABS,
@@ -392,12 +448,12 @@ app_ui = ui.page_navbar(
 def server(input, output, session):
     _wire_tab_server(
         "aim", _aim_run_fn, _AIM_SUBTABS, facet_subtabs=_AIM_CHILD_SUBTABS,
-        pjnz_choices=pjnz_stems_aim,
+        age_profile_subtabs=_AIM_AGEPROFILE_SUBTABS, pjnz_choices=pjnz_stems_aim,
     )
     _wire_tab_server(
         "goals", _goals_run_fn, _GOALS_SUBTABS,
         risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS, facet_subtabs=_GOALS_CHILD_SUBTABS,
-        pjnz_choices=pjnz_stems_goals,
+        age_profile_subtabs=_GOALS_AGEPROFILE_SUBTABS, pjnz_choices=pjnz_stems_goals,
     )
     _wire_tab_server(
         "eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True,
