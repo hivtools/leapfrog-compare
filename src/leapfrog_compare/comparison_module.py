@@ -22,12 +22,18 @@ from typing import Any, Callable
 
 from shiny import module, reactive, render, ui
 
+from leapfrog_compare.indicator_map import CD4_LABELS_HC1, CD4_LABELS_HC2
 from leapfrog_compare.plotting import ComparisonSource, render_comparison, render_risk_group_comparison
 
 # (data_by_source, output_years)
 RunFn = Callable[[Path], tuple[dict[str, Any], range]]
 # (data_by_source, output_years), takes a `force` kwarg to bypass any cache
 RunFnWithForce = Callable[..., tuple[dict[str, Any], range]]
+# Reactive getters (e.g. a module-level @reactive.poll/@reactive.calc in app.py)
+# so newly added/removed/edited PJNZ files in PJNZ_DIR are picked up live,
+# without restarting the app.
+PjnzFilesGetter = Callable[[], dict[str, Path]]
+PjnzChoicesGetter = Callable[[], "list[str] | dict[str, str]"]
 
 
 # ---------------------------------------------------------------------------
@@ -72,13 +78,20 @@ def data_panel_server(
     output,
     session,
     *,
-    pjnz_files: dict[str, Path],
+    pjnz_files: PjnzFilesGetter,
+    pjnz_choices: PjnzChoicesGetter,
     run_fn: RunFn | RunFnWithForce,
     show_rerun_button: bool = False,
 ):
     """Returns (data_run, year_range, pjnz_label) — plain callables, each
     readable from any other module's server function to establish the same
-    reactive dependency as if called locally."""
+    reactive dependency as if called locally.
+
+    `pjnz_files`/`pjnz_choices` are reactive getters (backed by a shared
+    @reactive.poll in app.py) rather than plain dicts/lists, so that files
+    added/removed/edited in PJNZ_DIR are picked up without restarting the app:
+    the PJNZ dropdown's choices refresh live, and `data_run` re-runs the model
+    for the current selection whenever the underlying file changes on disk."""
     _last_seen_rerun_clicks = 0
 
     @reactive.calc
@@ -86,7 +99,8 @@ def data_panel_server(
         """Returns (result, error_str). Exactly one of the two will be None."""
         nonlocal _last_seen_rerun_clicks
         pjnz_stem = input.pjnz()
-        if not pjnz_stem or pjnz_stem not in pjnz_files:
+        files = pjnz_files()
+        if not pjnz_stem or pjnz_stem not in files:
             return None, None
 
         force = False
@@ -98,8 +112,8 @@ def data_panel_server(
 
         try:
             if show_rerun_button:
-                return run_fn(pjnz_files[pjnz_stem], force=force), None
-            return run_fn(pjnz_files[pjnz_stem]), None
+                return run_fn(files[pjnz_stem], force=force), None
+            return run_fn(files[pjnz_stem]), None
         except Exception as exc:
             print(f"[comparison_module] Failed to run {pjnz_stem}: {exc}")
             return None, str(exc)
@@ -112,6 +126,19 @@ def data_panel_server(
         _, output_years = result
         y_min, y_max = int(min(output_years)), int(max(output_years))
         ui.update_slider("year_range", min=y_min, max=y_max, value=[y_min, y_max])
+
+    @reactive.effect
+    def _refresh_pjnz_choices():
+        """Re-fires whenever pjnz_choices() changes (i.e. PJNZ_DIR's poll detects
+        an added/removed/edited file), pushing the new dropdown choices to the
+        client. Preserves the current selection if it's still valid, otherwise
+        falls back to the first available choice."""
+        choices = pjnz_choices()
+        keys = list(choices.keys()) if isinstance(choices, dict) else list(choices)
+        with reactive.isolate():
+            current = input.pjnz()
+        selected = current if current in keys else (keys[0] if keys else None)
+        ui.update_selectize("pjnz", choices=choices, selected=selected)
 
     def year_range():
         return input.year_range()
@@ -349,11 +376,18 @@ def facet_panel_server(
         year_start, year_end = year_range()
         ind_def = facet_map[indicator]
 
-        # cd4_labels has more than one entry only for the CD4-faceted population
-        # indicators; the death indicators use a single ["Total"] row (Spectrum
-        # has no CD4-stratified child-deaths output), so the heading shouldn't
-        # claim a CD4 breakdown for those.
-        facet_desc = "CD4 distribution" if len(ind_def.cd4_labels) > 1 else "total"
+        # The death indicators use a single ["Total"] row (Spectrum has no
+        # CD4-stratified child-deaths output), so the heading shouldn't claim a
+        # CD4 breakdown for those. Of the CD4-faceted population indicators,
+        # 0-4 (hc1) stages are CD4 *percentage* bands ("CD4 distribution"),
+        # while 5-14 (hc2) stages are CD4 *count* bands ("CD4 count") — the
+        # standard child HIV-staging convention switches at age 5.
+        if ind_def.cd4_labels == CD4_LABELS_HC1:
+            facet_desc = "CD4 distribution"
+        elif ind_def.cd4_labels == CD4_LABELS_HC2:
+            facet_desc = "CD4 count"
+        else:
+            facet_desc = "total"
 
         html = render_risk_group_comparison(
             risk_groups=[(lbl, i) for i, lbl in enumerate(ind_def.cd4_labels)],

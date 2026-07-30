@@ -7,6 +7,10 @@ from pathlib import Path
 # Directory that contains the .PJNZ files to process.
 PJNZ_DIR: Path = Path("~/Downloads")
 
+# Seconds between checks of PJNZ_DIR for added/removed/modified .PJNZ files.
+# Files are picked up automatically within this interval — no app restart needed.
+PJNZ_POLL_INTERVAL_SECS: float = 5.0
+
 # --- EPPASM tab settings ---------------------------------------------------
 # R executable used to shell out to the eppasm / eppasm-leapfrog wrapper script.
 R_EXECUTABLE: str = "Rscript"

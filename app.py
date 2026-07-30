@@ -7,9 +7,9 @@ Usage:
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from shiny import App, ui
+from shiny import App, reactive, ui
 
 import leapfrog_compare.config as config
 from leapfrog_compare.comparison_module import (
@@ -35,20 +35,64 @@ from leapfrog_compare.spectrum_runner import run_spectrum
 _DEFAULT_YEAR_MIN = 1970
 _DEFAULT_YEAR_MAX = 2030
 
-_pjnz_files: dict[str, Path] = {
-    p.stem: p
-    for p in sorted(config.PJNZ_DIR.expanduser().glob("*.PJNZ"))
-}
-_pjnz_stems = list(_pjnz_files.keys())
+def _scan_pjnz_files() -> dict[str, Path]:
+    return {p.stem: p for p in sorted(config.PJNZ_DIR.expanduser().glob("*.PJNZ"))}
+
+
+def _pjnz_fingerprint() -> list[tuple[str, int, int]]:
+    """Cheap, frequently-polled signature of PJNZ_DIR's contents: (name, mtime_ns,
+    size) per file, sorted for stable comparison. Changes whenever a file is
+    added, removed, or edited — without opening/parsing anything."""
+    return sorted(
+        (p.name, p.stat().st_mtime_ns, p.stat().st_size)
+        for p in config.PJNZ_DIR.expanduser().glob("*.PJNZ")
+    )
+
+
+@reactive.poll(_pjnz_fingerprint, config.PJNZ_POLL_INTERVAL_SECS)
+def pjnz_files() -> dict[str, Path]:
+    """All .PJNZ files in PJNZ_DIR, keyed by stem. Re-scanned only when
+    _pjnz_fingerprint() changes, so files added/removed/edited in PJNZ_DIR are
+    picked up within one poll interval — no app restart needed. Declared at
+    module level (not per-session) since all sessions share the same directory."""
+    return _scan_pjnz_files()
+
 
 # Classify each PJNZ as "Goals" (has a .HV member — ran Spectrum's Goals/HIV
 # module) or "AIM" (doesn't). The AIM tab only offers AIM-only files, the Goals
 # tab only offers Goals-capable files, and EPPASM offers all of them labelled.
-_pjnz_is_goals: dict[str, bool] = {stem: is_goals_pjnz(path) for stem, path in _pjnz_files.items()}
-_pjnz_stems_goals = [s for s in _pjnz_stems if _pjnz_is_goals[s]]
-_pjnz_stems_aim = [s for s in _pjnz_stems if not _pjnz_is_goals[s]]
-_pjnz_choices_eppasm: dict[str, str] = {
-    s: f"{s} (Goals)" if _pjnz_is_goals[s] else f"{s} (AIM)" for s in _pjnz_stems
+@reactive.calc
+def pjnz_is_goals() -> dict[str, bool]:
+    return {stem: is_goals_pjnz(path) for stem, path in pjnz_files().items()}
+
+
+@reactive.calc
+def pjnz_stems_goals() -> list[str]:
+    is_goals = pjnz_is_goals()
+    return [s for s in pjnz_files() if is_goals[s]]
+
+
+@reactive.calc
+def pjnz_stems_aim() -> list[str]:
+    is_goals = pjnz_is_goals()
+    return [s for s in pjnz_files() if not is_goals[s]]
+
+
+@reactive.calc
+def pjnz_choices_eppasm() -> dict[str, str]:
+    is_goals = pjnz_is_goals()
+    return {s: f"{s} (Goals)" if is_goals[s] else f"{s} (AIM)" for s in pjnz_files()}
+
+
+# One-off snapshot used only to paint the initial (pre-session) UI; the
+# reactive getters above keep the live choices in sync with PJNZ_DIR for each
+# session afterwards (wired up in data_panel_server).
+_pjnz_files_initial = _scan_pjnz_files()
+_pjnz_is_goals_initial = {stem: is_goals_pjnz(path) for stem, path in _pjnz_files_initial.items()}
+_pjnz_stems_aim_initial = [s for s in _pjnz_files_initial if not _pjnz_is_goals_initial[s]]
+_pjnz_stems_goals_initial = [s for s in _pjnz_files_initial if _pjnz_is_goals_initial[s]]
+_pjnz_choices_eppasm_initial = {
+    s: f"{s} (Goals)" if _pjnz_is_goals_initial[s] else f"{s} (AIM)" for s in _pjnz_files_initial
 }
 
 _GOALS_SOURCES = [
@@ -192,15 +236,6 @@ _GOALS_CHILD_SUBTABS = [
         id="goals_child_cd4", label="0-14",
         indicator_names=CHILD_CD4_INDICATOR_NAMES, facet_map=CHILD_CD4_INDICATOR_MAP,
         sources=_GOALS_CHILD_CD4_SOURCES, title_prefix="Child",
-        wip_note=(
-            "the Spectrum comparison lines on this sub-tab (child CD4 "
-            "distribution for the population plots, and single-age AIDS-death "
-            "totals for the death plots) are not yet extracted from the PJNZ "
-            "import and will currently always show as zero. That will be added "
-            "in the future. Note also that the AIDS-deaths plots show a single "
-            "'Total' row rather than a per-CD4-stage breakdown, since Spectrum "
-            "has no CD4-stratified child-deaths output to compare against."
-        ),
     ),
 ]
 
@@ -240,7 +275,7 @@ def _build_tab_ui(
     title: str,
     sub_tabs: list[SubTab],
     *,
-    pjnz_choices: list[str] | dict[str, str] = _pjnz_stems,
+    pjnz_choices: list[str] | dict[str, str] = (),
     show_rerun_button: bool = False,
     risk_group_subtabs: list[RiskGroupSubTab] = (),
     facet_subtabs: list[FacetSubTab] = (),
@@ -290,12 +325,14 @@ def _wire_tab_server(
     run_fn,
     sub_tabs: list[SubTab],
     *,
+    pjnz_choices: Callable[[], list[str] | dict[str, str]],
     show_rerun_button: bool = False,
     risk_group_subtabs: list[RiskGroupSubTab] = (),
     facet_subtabs: list[FacetSubTab] = (),
 ):
     data_run, year_range, pjnz_label = data_panel_server(
-        top_id, pjnz_files=_pjnz_files, run_fn=run_fn, show_rerun_button=show_rerun_button,
+        top_id, pjnz_files=pjnz_files, pjnz_choices=pjnz_choices,
+        run_fn=run_fn, show_rerun_button=show_rerun_button,
     )
     for st in sub_tabs:
         plot_panel_server(
@@ -333,17 +370,17 @@ def _wire_tab_server(
 
 app_ui = ui.page_navbar(
     _build_tab_ui(
-        "aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim,
+        "aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim_initial,
         facet_subtabs=_AIM_CHILD_SUBTABS,
     ),
     _build_tab_ui(
         "goals", "Goals", _GOALS_SUBTABS,
-        pjnz_choices=_pjnz_stems_goals, risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS,
+        pjnz_choices=_pjnz_stems_goals_initial, risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS,
         facet_subtabs=_GOALS_CHILD_SUBTABS,
     ),
     _build_tab_ui(
         "eppasm", "EPPASM", _EPPASM_SUBTABS,
-        pjnz_choices=_pjnz_choices_eppasm, show_rerun_button=True,
+        pjnz_choices=_pjnz_choices_eppasm_initial, show_rerun_button=True,
     ),
     id="main_nav",
     title="Leapfrog Comparison",
@@ -353,12 +390,19 @@ app_ui = ui.page_navbar(
 
 
 def server(input, output, session):
-    _wire_tab_server("aim", _aim_run_fn, _AIM_SUBTABS, facet_subtabs=_AIM_CHILD_SUBTABS)
+    _wire_tab_server(
+        "aim", _aim_run_fn, _AIM_SUBTABS, facet_subtabs=_AIM_CHILD_SUBTABS,
+        pjnz_choices=pjnz_stems_aim,
+    )
     _wire_tab_server(
         "goals", _goals_run_fn, _GOALS_SUBTABS,
         risk_group_subtabs=_GOALS_RISKGROUP_SUBTABS, facet_subtabs=_GOALS_CHILD_SUBTABS,
+        pjnz_choices=pjnz_stems_goals,
     )
-    _wire_tab_server("eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True)
+    _wire_tab_server(
+        "eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True,
+        pjnz_choices=pjnz_choices_eppasm,
+    )
 
 
 app = App(app_ui, server)
