@@ -21,7 +21,7 @@ The AIM and Goals tabs run entirely in-process and re-run live on every PJNZ sel
 ```
 1. Drop .PJNZ files into PJNZ_DIR
 2. Edit config.py to point at that directory
-3. uv run shiny run app.py
+3. uv run app 
 ```
 
 ---
@@ -66,7 +66,7 @@ Review the EPPASM-tab settings (`EPPASM_DIR`, `EPPASM_LEAPFROG_DIR`, `EPPASM_USE
 ### 3. Launch the dashboard
 
 ```bash
-uv run shiny run app.py
+uv run app 
 ```
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
