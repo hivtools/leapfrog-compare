@@ -294,6 +294,11 @@ _MULTI_SUBTABS = [
         indicator_names=ALL_AGES_INDICATOR_NAMES,
         default_indicators=["New HIV infections", "AIDS deaths"],
     ),
+    MultiSubTab(
+        id="multi_1549", label="15-49",
+        indicator_names=FIFTEEN_49_INDICATOR_NAMES,
+        default_indicators=FIFTEEN_49_INDICATOR_NAMES,
+    ),
 ]
 
 _EPPASM_SUBTABS = [
