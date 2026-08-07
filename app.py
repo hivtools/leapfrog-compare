@@ -15,8 +15,9 @@ import leapfrog_compare.config as config
 from leapfrog_compare.comparison_module import (
     age_profile_panel_server, age_profile_panel_ui, data_panel_server, data_panel_ui,
     facet_panel_server, facet_panel_ui, multi_pjnz_panel_server, multi_pjnz_panel_ui,
-    multi_plot_panel_server, multi_plot_panel_ui, plot_panel_server, plot_panel_ui,
-    risk_group_panel_server, risk_group_panel_ui,
+    multi_plot_panel_server, multi_plot_panel_ui, multi_risk_group_panel_server,
+    multi_risk_group_panel_ui, plot_panel_server, plot_panel_ui, risk_group_panel_server,
+    risk_group_panel_ui,
 )
 from leapfrog_compare.eppasm_indicator_map import (
     EPPASM_ALL_AGES_INDICATOR_NAMES, EPPASM_FIFTEEN_49_INDICATOR_NAMES,
@@ -206,9 +207,28 @@ class MultiSubTab:
     default_indicators: list[str]
 
 
+@dataclass
+class MultiRiskGroupSubTab:
+    """A Multi PJNZ sub-tab with the dedicated one-row-per-risk-group layout — see
+    comparison_module.multi_risk_group_panel_ui/server and
+    plotting.render_multi_risk_group_comparison. Totals-only, no "By sex" checkbox
+    (v1 multi-file plots drop sex disaggregation entirely, per ADR-0003). Always wired
+    with `_GOALS_RISKGROUP_SOURCES`: risk-group data only exists under the "goals"/
+    "spectrum" keys, so under Model=DP/AIM these sub-tabs render nothing, matching the
+    missing-key-skip convention every other Multi PJNZ sub-tab already relies on."""
+    id: str
+    label: str
+    compute_fns: dict[str, Any]
+    title_prefix: str
+
+
 _GOALS_RISKGROUP_SOURCES = [
     ComparisonSource(key="goals", label="Leapfrog Goals", dash=None),
-    ComparisonSource(key="spectrum", label="Spectrum", dash="dash"),
+    # HV_AdultsTag/HV_NewInfectionsTag (read by compute_rg_spectrum/
+    # compute_new_infections_rg_spectrum) are the same raw modvar arrays
+    # _spec_newinf_disagg et al. read for _GOALS_SOURCES, which needs
+    # needs_offset_align=True — same requirement applies here.
+    ComparisonSource(key="spectrum", label="Spectrum", dash="dash", needs_offset_align=True),
 ]
 
 _GOALS_CHILD_CD4_SOURCES = [
@@ -293,6 +313,19 @@ _MULTI_SUBTABS = [
         id="multi_allages", label="All ages",
         indicator_names=ALL_AGES_INDICATOR_NAMES,
         default_indicators=["New HIV infections", "AIDS deaths"],
+    ),
+]
+
+_MULTI_RISKGROUP_SUBTABS = [
+    MultiRiskGroupSubTab(
+        id="multi_riskgroups", label="Risk groups",
+        compute_fns={"goals": compute_rg_goals, "spectrum": compute_rg_spectrum},
+        title_prefix="Risk groups",
+    ),
+    MultiRiskGroupSubTab(
+        id="multi_newinfections", label="New infections",
+        compute_fns={"goals": compute_new_infections_rg_goals, "spectrum": compute_new_infections_rg_spectrum},
+        title_prefix="New infections by risk group",
     ),
 ]
 
@@ -447,7 +480,13 @@ def _wire_tab_server(
         )
 
 
-def _build_multi_tab_ui(top_id: str, title: str, sub_tabs: list[MultiSubTab]):
+def _build_multi_tab_ui(
+    top_id: str,
+    title: str,
+    sub_tabs: list[MultiSubTab],
+    *,
+    risk_group_subtabs: list[MultiRiskGroupSubTab] = (),
+):
     return ui.nav_panel(
         title,
         ui.layout_sidebar(
@@ -467,13 +506,21 @@ def _build_multi_tab_ui(top_id: str, title: str, sub_tabs: list[MultiSubTab]):
                     ),
                 )
                 for st in sub_tabs
+            ], *[
+                ui.nav_panel(rgt.label, multi_risk_group_panel_ui(rgt.id))
+                for rgt in risk_group_subtabs
             ]),
             fillable=True,
         ),
     )
 
 
-def _wire_multi_tab_server(top_id: str, sub_tabs: list[MultiSubTab]):
+def _wire_multi_tab_server(
+    top_id: str,
+    sub_tabs: list[MultiSubTab],
+    *,
+    risk_group_subtabs: list[MultiRiskGroupSubTab] = (),
+):
     data_by_pjnz, year_range, model = multi_pjnz_panel_server(
         top_id,
         pjnz_files=pjnz_files,
@@ -489,6 +536,16 @@ def _wire_multi_tab_server(top_id: str, sub_tabs: list[MultiSubTab]):
             year_range=year_range,
             indicator_map=INDICATOR_MAP,
             sources=lambda: _GOALS_SOURCES if model() == "Goals" else _AIM_SOURCES,
+        )
+    for rgt in risk_group_subtabs:
+        multi_risk_group_panel_server(
+            rgt.id,
+            data_by_pjnz=data_by_pjnz,
+            year_range=year_range,
+            risk_groups=RISK_GROUPS,
+            sources=_GOALS_RISKGROUP_SOURCES,
+            compute_fns=rgt.compute_fns,
+            title_prefix=rgt.title_prefix,
         )
 
 
@@ -506,7 +563,9 @@ app_ui = ui.page_navbar(
         "eppasm", "EPPASM", _EPPASM_SUBTABS,
         pjnz_choices=_pjnz_choices_eppasm_initial, show_rerun_button=True,
     ),
-    _build_multi_tab_ui("multi", "Multi PJNZ", _MULTI_SUBTABS),
+    _build_multi_tab_ui(
+        "multi", "Multi PJNZ", _MULTI_SUBTABS, risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS,
+    ),
     id="main_nav",
     title="Leapfrog Comparison",
     header=ui.head_content(ui.tags.script(src="https://cdn.plot.ly/plotly-latest.min.js")),
@@ -528,7 +587,7 @@ def server(input, output, session):
         "eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True,
         pjnz_choices=pjnz_choices_eppasm,
     )
-    _wire_multi_tab_server("multi", _MULTI_SUBTABS)
+    _wire_multi_tab_server("multi", _MULTI_SUBTABS, risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS)
 
 
 app = App(app_ui, server)
