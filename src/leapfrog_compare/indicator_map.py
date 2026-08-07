@@ -122,6 +122,22 @@ CD4_LABELS_HC2: list[str] = [
 ]
 
 
+def cd4_facet_desc(cd4_labels: list[str]) -> str:
+    """Row-heading description for a ChildCD4IndicatorDef's `cd4_labels`, shared by
+    the single- and multi-PJNZ "0-14" sub-tabs. The death indicators use a single
+    ["Total"] row (Spectrum has no CD4-stratified child-deaths output), so the
+    heading shouldn't claim a CD4 breakdown for those. Of the CD4-faceted population
+    indicators, 0-4 (hc1) stages are CD4 *percentage* bands ("CD4 distribution"),
+    while 5-14 (hc2) stages are CD4 *count* bands ("CD4 count") — the standard
+    child HIV-staging convention switches at age 5."""
+    if cd4_labels == CD4_LABELS_HC1:
+        return "CD4 distribution"
+    elif cd4_labels == CD4_LABELS_HC2:
+        return "CD4 count"
+    else:
+        return "total"
+
+
 # ---------------------------------------------------------------------------
 # Low-level helpers
 # ---------------------------------------------------------------------------

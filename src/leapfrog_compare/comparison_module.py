@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from shiny import module, reactive, render, ui
 
-from leapfrog_compare.indicator_map import CD4_LABELS_HC1, CD4_LABELS_HC2
+from leapfrog_compare.indicator_map import cd4_facet_desc
 from leapfrog_compare.plotting import (
     ComparisonSource, render_age_profile, render_comparison, render_multi_pjnz_comparison,
     render_multi_risk_group_comparison, render_risk_group_comparison,
@@ -480,18 +480,7 @@ def facet_panel_server(
         year_start, year_end = year_range()
         ind_def = facet_map[indicator]
 
-        # The death indicators use a single ["Total"] row (Spectrum has no
-        # CD4-stratified child-deaths output), so the heading shouldn't claim a
-        # CD4 breakdown for those. Of the CD4-faceted population indicators,
-        # 0-4 (hc1) stages are CD4 *percentage* bands ("CD4 distribution"),
-        # while 5-14 (hc2) stages are CD4 *count* bands ("CD4 count") — the
-        # standard child HIV-staging convention switches at age 5.
-        if ind_def.cd4_labels == CD4_LABELS_HC1:
-            facet_desc = "CD4 distribution"
-        elif ind_def.cd4_labels == CD4_LABELS_HC2:
-            facet_desc = "CD4 count"
-        else:
-            facet_desc = "total"
+        facet_desc = cd4_facet_desc(ind_def.cd4_labels)
 
         html = render_risk_group_comparison(
             risk_groups=[(lbl, i) for i, lbl in enumerate(ind_def.cd4_labels)],
@@ -796,6 +785,96 @@ def multi_risk_group_panel_server(
             year_start=year_start,
             year_end=year_end,
             title=f"{title_prefix} — Multi PJNZ comparison",
+        )
+        html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+        return ui.div(*error_banner, ui.HTML(html))
+
+
+# ---------------------------------------------------------------------------
+# Multi PJNZ facet panel: the multi-file counterpart of `facet_panel_ui/server`
+# — a single-select indicator dropdown (no "By sex" checkbox, v1 multi-file
+# plots are totals-only per ADR-0003) driving the one-row-per-CD4-stage layout
+# with one line per (PJNZ file, source) pair per row — see
+# plotting.render_multi_risk_group_comparison. Used by the Multi PJNZ tab's
+# "0-14" sub-tab.
+# ---------------------------------------------------------------------------
+
+@module.ui
+def multi_facet_panel_ui(*, indicator_names: list[str]):
+    return ui.div(
+        ui.input_selectize(
+            "indicator",
+            label="Indicator",
+            choices=indicator_names,
+            selected=indicator_names[0] if indicator_names else None,
+        ),
+        ui.div(
+            ui.output_ui("comparison_plot"),
+            style="overflow-x: auto; overflow-y: auto;",
+        ),
+        style="padding-top: 12px;",
+    )
+
+
+@module.server
+def multi_facet_panel_server(
+    input,
+    output,
+    session,
+    *,
+    data_by_pjnz: Callable[[], tuple[dict[str, tuple], dict[str, str]]],
+    year_range: Callable[[], tuple[int, int]],
+    # Indicator name -> object with `.cd4_labels: list[str]` and
+    # `.compute_fns: dict[str, Callable]` (duck-typed to
+    # indicator_map.ChildCD4IndicatorDef) — same shape as `facet_panel_server`'s
+    # `facet_map`.
+    facet_map: dict[str, Any],
+    sources: Callable[[], list[ComparisonSource]],
+    title_prefix: str,
+    no_pjnz_message: str = "Select at least one PJNZ file.",
+):
+    @output
+    @render.ui
+    def comparison_plot():
+        data, errors = data_by_pjnz()
+
+        error_banner = [
+            ui.div(
+                ui.p(
+                    f"Error running model for '{stem}':",
+                    style="font-weight:bold; color:#c0392b; margin-bottom:4px;",
+                ),
+                ui.pre(msg, style="white-space:pre-wrap; color:#c0392b; font-size:0.85em;"),
+            )
+            for stem, msg in errors.items()
+        ]
+
+        if not data:
+            if error_banner:
+                return ui.div(*error_banner)
+            return ui.p(no_pjnz_message)
+
+        indicator = input.indicator()
+        if not indicator or indicator not in facet_map:
+            return ui.div(*error_banner, ui.p("Select an indicator."))
+
+        year_start, year_end = year_range()
+        stems = list(data.keys())
+        data_by_source_map = {stem: result[0] for stem, result in data.items()}
+        output_years_by_pjnz = {stem: result[1] for stem, result in data.items()}
+        ind_def = facet_map[indicator]
+        facet_desc = cd4_facet_desc(ind_def.cd4_labels)
+
+        fig = render_multi_risk_group_comparison(
+            risk_groups=[(lbl, i) for i, lbl in enumerate(ind_def.cd4_labels)],
+            sources=sources(),
+            data_by_pjnz=data_by_source_map,
+            output_years_by_pjnz=output_years_by_pjnz,
+            compute_fns=ind_def.compute_fns,
+            pjnz_stems=stems,
+            year_start=year_start,
+            year_end=year_end,
+            title=f"{title_prefix} {facet_desc} — {indicator} — Multi PJNZ comparison",
         )
         html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
         return ui.div(*error_banner, ui.HTML(html))

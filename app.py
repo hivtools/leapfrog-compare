@@ -14,10 +14,10 @@ from shiny import App, reactive, ui
 import leapfrog_compare.config as config
 from leapfrog_compare.comparison_module import (
     age_profile_panel_server, age_profile_panel_ui, data_panel_server, data_panel_ui,
-    facet_panel_server, facet_panel_ui, multi_pjnz_panel_server, multi_pjnz_panel_ui,
-    multi_plot_panel_server, multi_plot_panel_ui, multi_risk_group_panel_server,
-    multi_risk_group_panel_ui, plot_panel_server, plot_panel_ui, risk_group_panel_server,
-    risk_group_panel_ui,
+    facet_panel_server, facet_panel_ui, multi_facet_panel_server, multi_facet_panel_ui,
+    multi_pjnz_panel_server, multi_pjnz_panel_ui, multi_plot_panel_server, multi_plot_panel_ui,
+    multi_risk_group_panel_server, multi_risk_group_panel_ui, plot_panel_server, plot_panel_ui,
+    risk_group_panel_server, risk_group_panel_ui,
 )
 from leapfrog_compare.eppasm_indicator_map import (
     EPPASM_ALL_AGES_INDICATOR_NAMES, EPPASM_FIFTEEN_49_INDICATOR_NAMES,
@@ -222,6 +222,22 @@ class MultiRiskGroupSubTab:
     title_prefix: str
 
 
+@dataclass
+class MultiFacetSubTab:
+    """A Multi PJNZ sub-tab with a single-select indicator dropdown driving the
+    one-row-per-CD4-stage layout — see comparison_module.multi_facet_panel_ui/server
+    and plotting.render_multi_risk_group_comparison. Like MultiSubTab (not
+    MultiRiskGroupSubTab), `sources` is chosen dynamically from the Model switch:
+    unlike risk-group data (goals/spectrum only), CHILD_CD4_INDICATOR_MAP entries
+    define both spectrum and spectrum_aim keys, so CD4 child data exists under
+    both Goals and DP/AIM."""
+    id: str
+    label: str
+    indicator_names: list[str]
+    facet_map: dict[str, Any]
+    title_prefix: str
+
+
 _GOALS_RISKGROUP_SOURCES = [
     ComparisonSource(key="goals", label="Leapfrog Goals", dash=None),
     # HV_AdultsTag/HV_NewInfectionsTag (read by compute_rg_spectrum/
@@ -331,6 +347,14 @@ _MULTI_RISKGROUP_SUBTABS = [
         id="multi_newinfections", label="New infections",
         compute_fns={"goals": compute_new_infections_rg_goals, "spectrum": compute_new_infections_rg_spectrum},
         title_prefix="New infections by risk group",
+    ),
+]
+
+_MULTI_CHILD_SUBTABS = [
+    MultiFacetSubTab(
+        id="multi_child_cd4", label="0-14",
+        indicator_names=CHILD_CD4_INDICATOR_NAMES, facet_map=CHILD_CD4_INDICATOR_MAP,
+        title_prefix="Child",
     ),
 ]
 
@@ -491,6 +515,7 @@ def _build_multi_tab_ui(
     sub_tabs: list[MultiSubTab],
     *,
     risk_group_subtabs: list[MultiRiskGroupSubTab] = (),
+    facet_subtabs: list[MultiFacetSubTab] = (),
 ):
     return ui.nav_panel(
         title,
@@ -514,6 +539,12 @@ def _build_multi_tab_ui(
             ], *[
                 ui.nav_panel(rgt.label, multi_risk_group_panel_ui(rgt.id))
                 for rgt in risk_group_subtabs
+            ], *[
+                ui.nav_panel(
+                    ft.label,
+                    multi_facet_panel_ui(ft.id, indicator_names=ft.indicator_names),
+                )
+                for ft in facet_subtabs
             ]),
             fillable=True,
         ),
@@ -525,6 +556,7 @@ def _wire_multi_tab_server(
     sub_tabs: list[MultiSubTab],
     *,
     risk_group_subtabs: list[MultiRiskGroupSubTab] = (),
+    facet_subtabs: list[MultiFacetSubTab] = (),
 ):
     data_by_pjnz, year_range, model = multi_pjnz_panel_server(
         top_id,
@@ -552,6 +584,15 @@ def _wire_multi_tab_server(
             compute_fns=rgt.compute_fns,
             title_prefix=rgt.title_prefix,
         )
+    for ft in facet_subtabs:
+        multi_facet_panel_server(
+            ft.id,
+            data_by_pjnz=data_by_pjnz,
+            year_range=year_range,
+            facet_map=ft.facet_map,
+            sources=lambda: _GOALS_CHILD_CD4_SOURCES if model() == "Goals" else _AIM_SOURCES,
+            title_prefix=ft.title_prefix,
+        )
 
 
 app_ui = ui.page_navbar(
@@ -569,7 +610,8 @@ app_ui = ui.page_navbar(
         pjnz_choices=_pjnz_choices_eppasm_initial, show_rerun_button=True,
     ),
     _build_multi_tab_ui(
-        "multi", "Multi PJNZ", _MULTI_SUBTABS, risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS,
+        "multi", "Multi PJNZ", _MULTI_SUBTABS,
+        risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS, facet_subtabs=_MULTI_CHILD_SUBTABS,
     ),
     id="main_nav",
     title="Leapfrog Comparison",
@@ -592,7 +634,10 @@ def server(input, output, session):
         "eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True,
         pjnz_choices=pjnz_choices_eppasm,
     )
-    _wire_multi_tab_server("multi", _MULTI_SUBTABS, risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS)
+    _wire_multi_tab_server(
+        "multi", _MULTI_SUBTABS,
+        risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS, facet_subtabs=_MULTI_CHILD_SUBTABS,
+    )
 
 
 app = App(app_ui, server)
