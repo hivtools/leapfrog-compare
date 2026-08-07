@@ -25,7 +25,7 @@ from shiny import module, reactive, render, ui
 from leapfrog_compare.indicator_map import CD4_LABELS_HC1, CD4_LABELS_HC2
 from leapfrog_compare.plotting import (
     ComparisonSource, render_age_profile, render_comparison, render_multi_pjnz_comparison,
-    render_risk_group_comparison,
+    render_multi_risk_group_comparison, render_risk_group_comparison,
 )
 
 # (data_by_source, output_years)
@@ -725,6 +725,77 @@ def multi_plot_panel_server(
             year_start=year_start,
             year_end=year_end,
             title="Multi PJNZ comparison",
+        )
+        html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+        return ui.div(*error_banner, ui.HTML(html))
+
+
+# ---------------------------------------------------------------------------
+# Multi PJNZ risk-group panel: the one-row-per-risk-group layout (no indicator
+# selector, no "By sex" checkbox — v1 multi-file plots are totals-only per
+# ADR-0003) driving a rendered plot with one line per (PJNZ file, source) pair
+# per row — see plotting.render_multi_risk_group_comparison. Used by the Multi
+# PJNZ tab's "Risk groups" and "New infections" sub-tabs.
+# ---------------------------------------------------------------------------
+
+@module.ui
+def multi_risk_group_panel_ui():
+    return ui.div(
+        ui.output_ui("comparison_plot"),
+        style="overflow-x: auto; overflow-y: auto; padding-top: 12px;",
+    )
+
+
+@module.server
+def multi_risk_group_panel_server(
+    input,
+    output,
+    session,
+    *,
+    data_by_pjnz: Callable[[], tuple[dict[str, tuple], dict[str, str]]],
+    year_range: Callable[[], tuple[int, int]],
+    risk_groups: list[tuple[str, int]],
+    sources: list[ComparisonSource],
+    compute_fns: dict[str, Any],
+    title_prefix: str,
+    no_pjnz_message: str = "Select at least one PJNZ file.",
+):
+    @output
+    @render.ui
+    def comparison_plot():
+        data, errors = data_by_pjnz()
+
+        error_banner = [
+            ui.div(
+                ui.p(
+                    f"Error running model for '{stem}':",
+                    style="font-weight:bold; color:#c0392b; margin-bottom:4px;",
+                ),
+                ui.pre(msg, style="white-space:pre-wrap; color:#c0392b; font-size:0.85em;"),
+            )
+            for stem, msg in errors.items()
+        ]
+
+        if not data:
+            if error_banner:
+                return ui.div(*error_banner)
+            return ui.p(no_pjnz_message)
+
+        year_start, year_end = year_range()
+        stems = list(data.keys())
+        data_by_source_map = {stem: result[0] for stem, result in data.items()}
+        output_years_by_pjnz = {stem: result[1] for stem, result in data.items()}
+
+        fig = render_multi_risk_group_comparison(
+            risk_groups=risk_groups,
+            sources=sources,
+            data_by_pjnz=data_by_source_map,
+            output_years_by_pjnz=output_years_by_pjnz,
+            compute_fns=compute_fns,
+            pjnz_stems=stems,
+            year_start=year_start,
+            year_end=year_end,
+            title=f"{title_prefix} — Multi PJNZ comparison",
         )
         html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
         return ui.div(*error_banner, ui.HTML(html))

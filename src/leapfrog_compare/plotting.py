@@ -382,6 +382,90 @@ def render_risk_group_comparison(
     return fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
 
 
+def render_multi_risk_group_comparison(
+    *,
+    risk_groups: list[tuple[str, int]],
+    sources: list[ComparisonSource],
+    data_by_pjnz: dict[str, dict[str, Any]],
+    output_years_by_pjnz: dict[str, range],
+    compute_fns: dict[str, Any],
+    pjnz_stems: list[str],
+    year_start: int,
+    year_end: int,
+    title: str,
+) -> go.Figure:
+    """Multi-file counterpart of `render_risk_group_comparison`, used by the Multi PJNZ
+    tab's "Risk groups"/"New infections" sub-tabs: one row per risk group (not per
+    indicator), one line per (PJNZ file, source) pair per row. Colour encodes which PJNZ
+    file a line belongs to, dash encodes source — same convention as
+    `render_multi_pjnz_comparison`. Always calls `compute_fns[key](data, False)`
+    (disagg_sex hard-off): v1 multi-file plots are totals-only, sex/age disaggregation
+    dropped to keep colour free for file identity (ADR-0003) — same reasoning as
+    `render_multi_pjnz_comparison` dropping the age-facet grid entirely.
+
+    Each file's line is masked against its own `output_years_by_pjnz[stem]`, matching
+    `render_multi_pjnz_comparison`'s union-year-range behavior. Returns the `go.Figure`
+    directly, same as `render_multi_pjnz_comparison` — callers convert to HTML themselves.
+    """
+    n_rg = len(risk_groups)
+    rg_row = {rg_name: i + 1 for i, (rg_name, _rg) in enumerate(risk_groups)}
+    _add_trace = _make_trace_helpers(line_width=2)
+
+    fig = make_subplots(
+        rows=n_rg,
+        cols=1,
+        subplot_titles=[rg_name for rg_name, _ in risk_groups],
+        shared_xaxes=False,
+        vertical_spacing=max(0.04, 0.3 / max(n_rg, 1)),
+    )
+
+    for stem in pjnz_stems:
+        data_by_source = data_by_pjnz.get(stem)
+        output_years = output_years_by_pjnz.get(stem)
+        if data_by_source is None or output_years is None:
+            continue
+        years_arr = np.array(list(output_years))
+        mask = (years_arr >= year_start) & (years_arr <= year_end)
+        first_year = int(min(output_years))
+
+        for source in sources:
+            data = data_by_source.get(source.key)
+            compute_fn = compute_fns.get(source.key)
+            if data is None or compute_fn is None:
+                continue
+            try:
+                series = compute_fn(data, False)
+            except Exception as exc:
+                print(f"[plotting] multi risk-group {source.key} failed for {stem}: {exc}")
+                continue
+            for rg_name, _demo, values in series:
+                if source.needs_offset_align:
+                    x, y = series_utils.align_offset(values, years_arr, first_year, mask)
+                else:
+                    x, y = years_arr[mask].tolist(), values[mask].tolist()
+                if x:
+                    trace_name = f"{stem} — {source.label}"
+                    _add_trace(fig, x, y, trace_name, stem, source.dash, rg_row[rg_name], 1)
+
+    fig.update_xaxes(
+        showgrid=True, gridcolor="#e5e5e5",
+        range=[year_start - 1, year_end + 1],
+        tickformat="d", tickangle=45,
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
+
+    fig.update_layout(
+        height=max(500, n_rg * 250),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hoverlabel=dict(namelength=-1),
+        title_text=title,
+        margin=dict(t=80, b=40, l=60, r=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig
+
+
 def render_multi_pjnz_comparison(
     *,
     indicator_map: dict[str, Any],
