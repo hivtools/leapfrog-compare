@@ -6,13 +6,15 @@ Interactive dashboard for comparing Spectrum modvar output against leapfrog mode
 
 ## Overview
 
-The dashboard has three top-level tabs, each an independent comparison over the same set of PJNZ files. Each top-level tab shares one PJNZ selector and year-range slider, and splits its plots across an inner row of sub-tabs — one per "type of plot":
+The dashboard has four top-level tabs. AIM, Goals, and EPPASM each compare sources for a single, individually-selected PJNZ file, sharing one PJNZ selector and year-range slider, and split their plots across an inner row of sub-tabs — one per "type of plot":
 
 - **AIM** — leapfrog-py's `run_model(..., "Spectrum", ...)` (a DP/AIM-only engine run) vs the Spectrum modvars read directly from the PJNZ. Sub-tabs: **All ages**, **15-49**.
 - **Goals** — the leapfrog-goals model's `run_goals()` output (both its DP/AIM-derived arrays and its Goals-native pre-aggregated outputs) vs Spectrum modvars. Sub-tabs: **All ages**, **15-49**, **Risk groups**, **New infections**.
 - **EPPASM** — `eppasm::simmod()` vs `eppasm.lf::simmod()` (the eppasm-leapfrog fork), run by shelling out to R. Sub-tabs: **All ages** (with its own age-faceted view, using EPPASM's coarser 9-group age scheme), **15-49**.
 
 Each PJNZ is classified by inspecting the zip contents: a file containing a `.HV` member ran Spectrum's Goals/HIV module ("Goals"-capable); one without is "AIM"-only. The AIM tab only offers AIM-only PJNZ files, the Goals tab only offers Goals-capable ones, and the EPPASM tab offers all of them labelled `(Goals)` / `(AIM)`.
+
+- **Multi PJNZ** — compares leapfrog vs Spectrum output across two or more PJNZ files at once, to check that an intervention encoded in one file changes the trajectory as expected relative to another. Its sidebar has a PJNZ multiselect instead of a single-select, plus a **Model** switch (**Goals** / **DP/AIM**, default Goals) that swaps both the pool of selectable files and which run function processes them; the leapfrog source is always DP/AIM, reusing the AIM/Goals tabs' own `_AIM_SOURCES`/`_GOALS_SOURCES` lists. Colour encodes which PJNZ file a line belongs to; dash still encodes source (solid/dashed/dotted, same convention as the other tabs). The year-range slider spans the union of all selected files' year ranges, so each file's line ends at its own native boundary rather than being clipped to the shortest file. Sub-tabs: **All ages** (totals only — no age/sex disaggregation in v1). See `docs/adr/0001-multi-pjnz-single-tab-with-model-switch.md` through `0003-multi-pjnz-plot-encoding.md` for the design rationale.
 
 Adding a new sub-tab is just adding one more `SubTab(...)` (or `RiskGroupSubTab(...)`) entry to the matching top-level tab's list in `app.py` — no other wiring required.
 
@@ -91,29 +93,40 @@ Global controls (sidebar):
 
 Each facet shows one line per source, in a consistent dash style per source (solid / dashed / dotted) and a consistent colour per demographic group across sources. The **Risk groups** and **New infections** sub-tabs (Goals tab only) instead show one fixed panel per risk group, comparing Goals vs Spectrum.
 
+The **Multi PJNZ** tab has its own sidebar instead: a **PJNZ** multiselect, a **Model** switch (Goals / DP-AIM), and a **Year range** slider spanning the union of all selected files' years. Colour there encodes which PJNZ file a line belongs to (dash still encodes source), and there is no age/sex disaggregation.
+
 ---
 
 ## Project structure
 
 ```
 leapfrog-compare/
-├── app.py                             # Shiny for Python dashboard — composes the three tabs
+├── app.py                             # Shiny for Python dashboard — composes the four top-level tabs
 ├── pyproject.toml                     # uv/pip project metadata
 ├── r/
 │   └── run_simmod.R                   # Rscript wrapper: runs simmod() for one package, writes a tidy CSV
 ├── scripts/
 │   └── precompute_eppasm.py           # Batch-populate the EPPASM cache for every PJNZ
+├── tests/
+│   └── test_plotting_multi_pjnz.py    # Unit tests for the Multi PJNZ tab's render function
 └── src/
     └── leapfrog_compare/
         ├── config.py                  # User configuration (PJNZ_DIR, EPPASM_* settings)
-        ├── comparison_module.py       # Reusable Shiny module: one tab's UI + server logic
+        ├── comparison_module.py       # Reusable Shiny modules: each tab's UI + server logic
         ├── plotting.py                # Generic N-source comparison figure renderer (all tabs)
         ├── series_utils.py            # Shared series-reshaping helpers used by plotting.py
         ├── indicator_map.py           # Goals/Spectrum tabs' indicator ↔ compute-function mapping
         ├── eppasm_indicator_map.py    # EPPASM tab's indicator ↔ compute-function mapping
+        ├── pjnz_classify.py           # Classifies a PJNZ as Goals-capable or AIM-only
         ├── pjnz_runner.py             # PJNZ loading + leapfrog-goals model execution (Goals tab)
         ├── spectrum_runner.py         # PJNZ loading + leapfrog-py "Spectrum" model execution (Spectrum tab)
         └── eppasm_runner.py           # Shells out to r/run_simmod.R, caches results (EPPASM tab)
+```
+
+### Running tests
+
+```bash
+uv run pytest
 ```
 
 ---
