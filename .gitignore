@@ -2,3 +2,5 @@ output
 __pycache__
 .venv
 .vscode
+.worktrees
+sandbox/.env
