@@ -24,7 +24,8 @@ from shiny import module, reactive, render, ui
 
 from leapfrog_compare.indicator_map import CD4_LABELS_HC1, CD4_LABELS_HC2
 from leapfrog_compare.plotting import (
-    ComparisonSource, render_age_profile, render_comparison, render_risk_group_comparison,
+    ComparisonSource, render_age_profile, render_comparison, render_multi_pjnz_comparison,
+    render_risk_group_comparison,
 )
 
 # (data_by_source, output_years)
@@ -36,6 +37,7 @@ RunFnWithForce = Callable[..., tuple[dict[str, Any], range]]
 # without restarting the app.
 PjnzFilesGetter = Callable[[], dict[str, Path]]
 PjnzChoicesGetter = Callable[[], "list[str] | dict[str, str]"]
+PjnzStemsGetter = Callable[[], list[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -503,3 +505,226 @@ def facet_panel_server(
             title=f"{title_prefix} {facet_desc} — {indicator} — {pjnz_label()}",
         )
         return ui.HTML(html)
+
+
+# ---------------------------------------------------------------------------
+# Multi PJNZ data panel: a multi-select PJNZ picker + a Goals/DP-AIM "Model"
+# switch (determines both the file pool and which run function processes each
+# selected file) + a year-range slider spanning the UNION of all selected
+# files' own year ranges. Unlike `data_panel_ui`/`data_panel_server` (one
+# PJNZ, shared across a top-level tab's sub-tabs), this drives the dedicated
+# "Multi PJNZ" top-level tab, whose whole point is comparing 2+ files at once.
+#
+# Each selected file's model run is cached in memory for the session, keyed
+# by stem and invalidated by an (mtime_ns, size) fingerprint check (same idea
+# as app.py's `_pjnz_fingerprint`, applied per-file) — so switching a file out
+# of the selection and back in, or re-selecting the same file after switching
+# Model and back, does not re-run its model.
+# ---------------------------------------------------------------------------
+
+@module.ui
+def multi_pjnz_panel_ui(
+    *,
+    goals_choices: list[str],
+    year_min: int,
+    year_max: int,
+):
+    return ui.sidebar(
+        ui.h5("Filters"),
+        ui.input_radio_buttons(
+            "model", "Model", choices=["Goals", "DP/AIM"], selected="Goals",
+        ),
+        ui.input_selectize(
+            "pjnz",
+            label="PJNZ files",
+            choices=goals_choices,
+            multiple=True,
+            selected=goals_choices[:1],
+            options={"plugins": ["remove_button"]},
+        ),
+        ui.hr(),
+        ui.input_slider(
+            "year_range",
+            "Year range",
+            min=year_min,
+            max=year_max,
+            value=[year_min, year_max],
+            step=1,
+            sep="",
+        ),
+        width=320,
+    )
+
+
+@module.server
+def multi_pjnz_panel_server(
+    input,
+    output,
+    session,
+    *,
+    pjnz_files: PjnzFilesGetter,
+    pjnz_stems_goals: PjnzStemsGetter,
+    pjnz_stems_aim: PjnzStemsGetter,
+    goals_run_fn: RunFn,
+    aim_run_fn: RunFn,
+):
+    """Returns (data_by_pjnz, year_range, model) — plain callables, same pattern as
+    `data_panel_server`.
+
+    `data_by_pjnz()` returns `(data, errors)`:
+      - `data`: dict[stem, (data_by_source, output_years)] for every currently
+        selected file whose model run succeeded (or was served from cache).
+      - `errors`: dict[stem, str] for every currently selected file whose run raised.
+    """
+    _cache: dict[str, tuple[tuple[int, int], tuple[dict[str, Any], range]]] = {}
+
+    def _current_stems() -> list[str]:
+        return pjnz_stems_goals() if input.model() == "Goals" else pjnz_stems_aim()
+
+    def _current_run_fn() -> RunFn:
+        return goals_run_fn if input.model() == "Goals" else aim_run_fn
+
+    def _run_cached(stem: str, path: Path) -> tuple[dict[str, Any], range]:
+        stat = path.stat()
+        fingerprint = (stat.st_mtime_ns, stat.st_size)
+        cached = _cache.get(stem)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        result = _current_run_fn()(path)
+        _cache[stem] = (fingerprint, result)
+        return result
+
+    @reactive.effect
+    def _refresh_pjnz_choices():
+        """Re-fires whenever the Model switch changes, or the active pool's file
+        listing changes. Preserves selections still valid in the new pool; when
+        switching Model, the previous selection is never valid in the new pool
+        (Goals-classified and AIM-only stems are disjoint), so this naturally
+        auto-selects the first file in the new pool."""
+        stems = _current_stems()
+        with reactive.isolate():
+            current = list(input.pjnz() or ())
+        still_valid = [s for s in current if s in stems]
+        selected = still_valid if still_valid else (stems[:1] if stems else [])
+        ui.update_selectize("pjnz", choices=stems, selected=selected)
+
+    @reactive.calc
+    def data_by_pjnz():
+        files = pjnz_files()
+        selected = input.pjnz() or ()
+        data: dict[str, tuple[dict[str, Any], range]] = {}
+        errors: dict[str, str] = {}
+        for stem in selected:
+            path = files.get(stem)
+            if path is None:
+                continue
+            try:
+                data[stem] = _run_cached(stem, path)
+            except Exception as exc:
+                print(f"[comparison_module] Failed to run {stem}: {exc}")
+                errors[stem] = str(exc)
+        return data, errors
+
+    @reactive.effect
+    def _update_year_slider():
+        data, _errors = data_by_pjnz()
+        if not data:
+            return
+        all_years = [y for _src, output_years in data.values() for y in (min(output_years), max(output_years))]
+        y_min, y_max = min(all_years), max(all_years)
+        ui.update_slider("year_range", min=y_min, max=y_max, value=[y_min, y_max])
+
+    def year_range():
+        return input.year_range()
+
+    def model():
+        return input.model()
+
+    return data_by_pjnz, year_range, model
+
+
+# ---------------------------------------------------------------------------
+# Multi PJNZ plot panel: indicator multiselect (same pattern as plot_panel_ui)
+# + a rendered plot with one line per (PJNZ file, source) — see
+# plotting.render_multi_pjnz_comparison. No age/sex disaggregation controls
+# (v1 is totals-only, see ADR-0003) — colour is reserved for the PJNZ file.
+# ---------------------------------------------------------------------------
+
+@module.ui
+def multi_plot_panel_ui(
+    *,
+    indicator_names: list[str],
+    default_indicators: list[str],
+):
+    return ui.div(
+        ui.input_selectize(
+            "indicators",
+            label="Indicators",
+            choices=indicator_names,
+            multiple=True,
+            selected=default_indicators,
+            options={"plugins": ["remove_button"]},
+        ),
+        ui.div(
+            ui.output_ui("comparison_plot"),
+            style="overflow-x: auto; overflow-y: auto;",
+        ),
+        style="padding-top: 12px;",
+    )
+
+
+@module.server
+def multi_plot_panel_server(
+    input,
+    output,
+    session,
+    *,
+    data_by_pjnz: Callable[[], tuple[dict[str, tuple], dict[str, str]]],
+    year_range: Callable[[], tuple[int, int]],
+    indicator_map: dict[str, Any],
+    sources: Callable[[], list[ComparisonSource]],
+    no_pjnz_message: str = "Select at least one PJNZ file.",
+):
+    @output
+    @render.ui
+    def comparison_plot():
+        data, errors = data_by_pjnz()
+
+        error_banner = [
+            ui.div(
+                ui.p(
+                    f"Error running model for '{stem}':",
+                    style="font-weight:bold; color:#c0392b; margin-bottom:4px;",
+                ),
+                ui.pre(msg, style="white-space:pre-wrap; color:#c0392b; font-size:0.85em;"),
+            )
+            for stem, msg in errors.items()
+        ]
+
+        if not data:
+            if error_banner:
+                return ui.div(*error_banner)
+            return ui.p(no_pjnz_message)
+
+        selected_indicators = input.indicators()
+        if not selected_indicators:
+            return ui.div(*error_banner, ui.p("Select at least one indicator."))
+
+        year_start, year_end = year_range()
+        stems = list(data.keys())
+        data_by_source_map = {stem: result[0] for stem, result in data.items()}
+        output_years_by_pjnz = {stem: result[1] for stem, result in data.items()}
+
+        fig = render_multi_pjnz_comparison(
+            indicator_map=indicator_map,
+            data_by_pjnz=data_by_source_map,
+            output_years_by_pjnz=output_years_by_pjnz,
+            sources=sources(),
+            selected_indicators=selected_indicators,
+            pjnz_stems=stems,
+            year_start=year_start,
+            year_end=year_end,
+            title="Multi PJNZ comparison",
+        )
+        html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+        return ui.div(*error_banner, ui.HTML(html))

@@ -54,29 +54,32 @@ def _trace_label(source: ComparisonSource, demo: str) -> str:
 
 
 def _make_trace_helpers(line_width: float = 2):
-    """Returns an `add_trace(fig, x, y, trace_name, demo, dash, row, col)` closure that
-    assigns a stable colour per demographic-group label (shared across sources so e.g.
-    "Male" gets the same colour regardless of which source drew it) and de-duplicates
-    legend entries by trace name."""
-    demo_colors: dict[str, str] = {}
+    """Returns an `add_trace(fig, x, y, trace_name, color_key, dash, row, col)` closure
+    that assigns a stable colour per `color_key` (shared across sources so e.g. every
+    trace with `color_key == "Male"` gets the same colour regardless of which source
+    drew it) and de-duplicates legend entries by trace name. `color_key` is usually a
+    demographic-group label, but is just an arbitrary hashable string as far as this
+    function is concerned — the Multi PJNZ tab passes a PJNZ stem instead, to colour by
+    file rather than by demographic group."""
+    key_colors: dict[str, str] = {}
     palette_idx = 0
     legend_shown: set[str] = set()
 
-    def _color_for(demo: str) -> str:
+    def _color_for(color_key: str) -> str:
         nonlocal palette_idx
-        if demo not in demo_colors:
-            demo_colors[demo] = _PALETTE[palette_idx % len(_PALETTE)]
+        if color_key not in key_colors:
+            key_colors[color_key] = _PALETTE[palette_idx % len(_PALETTE)]
             palette_idx += 1
-        return demo_colors[demo]
+        return key_colors[color_key]
 
-    def add_trace(fig, x, y, trace_name, demo, dash, row, col):
+    def add_trace(fig, x, y, trace_name, color_key, dash, row, col):
         show_leg = trace_name not in legend_shown
         if show_leg:
             legend_shown.add(trace_name)
         fig.add_trace(
             go.Scatter(
                 x=x, y=y, mode="lines", name=trace_name,
-                line=dict(color=_color_for(demo), width=line_width, dash=dash),
+                line=dict(color=_color_for(color_key), width=line_width, dash=dash),
                 legendgroup=trace_name, showlegend=show_leg,
             ),
             row=row, col=col,
@@ -377,3 +380,90 @@ def render_risk_group_comparison(
         paper_bgcolor="white",
     )
     return fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+
+
+def render_multi_pjnz_comparison(
+    *,
+    indicator_map: dict[str, Any],
+    data_by_pjnz: dict[str, dict[str, Any]],
+    output_years_by_pjnz: dict[str, range],
+    sources: list[ComparisonSource],
+    selected_indicators: list[str],
+    pjnz_stems: list[str],
+    year_start: int,
+    year_end: int,
+    title: str,
+) -> go.Figure:
+    """Multi-file counterpart of `render_comparison`, used by the Multi PJNZ tab: one
+    line per (PJNZ file, source) pair per indicator, totals-only (no age/sex
+    disaggregation — v1 drops that entirely to free up the colour channel, see
+    ADR-0003). Colour encodes which PJNZ file a line belongs to (keyed by stem via
+    `_make_trace_helpers`); dash still encodes source, same convention as every other
+    tab. Unlike `render_comparison`, this returns the `go.Figure` directly rather than
+    an HTML string, so tests can assert on trace properties without a Shiny harness —
+    callers that need HTML (the Shiny panel) call `.to_html(...)` themselves.
+
+    Each file's line is masked against its own `output_years_by_pjnz[stem]`, not a
+    shared range: `year_start`/`year_end` is the union across all selected files (the
+    multi-select year-range slider), so a file whose native year range is narrower
+    simply ends at its own boundary rather than being clipped to the intersection.
+    """
+    n_inds = len(selected_indicators)
+    _add_trace = _make_trace_helpers(line_width=2)
+
+    fig = make_subplots(
+        rows=n_inds,
+        cols=1,
+        subplot_titles=list(selected_indicators),
+        shared_xaxes=False,
+        vertical_spacing=max(0.04, 0.3 / max(n_inds, 1)),
+    )
+
+    for ind_idx, indicator in enumerate(selected_indicators):
+        row = ind_idx + 1
+        ind_def = indicator_map[indicator]
+
+        for stem in pjnz_stems:
+            data_by_source = data_by_pjnz.get(stem)
+            output_years = output_years_by_pjnz.get(stem)
+            if data_by_source is None or output_years is None:
+                continue
+            years_arr = np.array(list(output_years))
+            mask = (years_arr >= year_start) & (years_arr <= year_end)
+            first_year = int(min(output_years))
+
+            for source in sources:
+                fn = ind_def.disagg.get(source.key)
+                if fn is None:
+                    continue
+                try:
+                    series = fn(data_by_source[source.key], False, False)
+                except Exception as exc:
+                    print(f"[plotting] multi-pjnz {source.key} disagg failed for {indicator} ({stem}): {exc}")
+                    continue
+                for _demo, values in series:
+                    if source.needs_offset_align:
+                        x, y = series_utils.align_offset(values, years_arr, first_year, mask)
+                    else:
+                        x, y = years_arr[mask].tolist(), values[mask].tolist()
+                    if x:
+                        trace_name = f"{stem} — {source.label}"
+                        _add_trace(fig, x, y, trace_name, stem, source.dash, row, 1)
+
+    fig.update_xaxes(
+        showgrid=True, gridcolor="#e5e5e5",
+        range=[year_start - 1, year_end + 1],
+        tickformat="d", tickangle=45,
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
+
+    fig.update_layout(
+        height=max(400, n_inds * 300),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hoverlabel=dict(namelength=-1),
+        title_text=title,
+        margin=dict(t=80, b=40, l=60, r=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig

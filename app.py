@@ -14,7 +14,8 @@ from shiny import App, reactive, ui
 import leapfrog_compare.config as config
 from leapfrog_compare.comparison_module import (
     age_profile_panel_server, age_profile_panel_ui, data_panel_server, data_panel_ui,
-    facet_panel_server, facet_panel_ui, plot_panel_server, plot_panel_ui,
+    facet_panel_server, facet_panel_ui, multi_pjnz_panel_server, multi_pjnz_panel_ui,
+    multi_plot_panel_server, multi_plot_panel_ui, plot_panel_server, plot_panel_ui,
     risk_group_panel_server, risk_group_panel_ui,
 )
 from leapfrog_compare.eppasm_indicator_map import (
@@ -191,6 +192,20 @@ class AgeProfileSubTab:
     title_prefix: str = "By age"
 
 
+@dataclass
+class MultiSubTab:
+    """A Multi PJNZ sub-tab: an indicator multiselect driving one line per
+    (PJNZ file, source) pair — see comparison_module.multi_plot_panel_ui/server
+    and plotting.render_multi_pjnz_comparison. Unlike SubTab, there is no
+    `sources`/`indicator_map` field here: `indicator_map` is always the shared
+    INDICATOR_MAP, and `sources` is chosen dynamically from the Model switch
+    (`_GOALS_SOURCES`/`_AIM_SOURCES`, reused verbatim — see ADR-0002)."""
+    id: str
+    label: str
+    indicator_names: list[str]
+    default_indicators: list[str]
+
+
 _GOALS_RISKGROUP_SOURCES = [
     ComparisonSource(key="goals", label="Leapfrog Goals", dash=None),
     ComparisonSource(key="spectrum", label="Spectrum", dash="dash"),
@@ -270,6 +285,14 @@ _GOALS_CHILD_SUBTABS = [
         id="goals_child_cd4", label="0-14",
         indicator_names=CHILD_CD4_INDICATOR_NAMES, facet_map=CHILD_CD4_INDICATOR_MAP,
         sources=_GOALS_CHILD_CD4_SOURCES, title_prefix="Child",
+    ),
+]
+
+_MULTI_SUBTABS = [
+    MultiSubTab(
+        id="multi_allages", label="All ages",
+        indicator_names=ALL_AGES_INDICATOR_NAMES,
+        default_indicators=["New HIV infections", "AIDS deaths"],
     ),
 ]
 
@@ -424,6 +447,51 @@ def _wire_tab_server(
         )
 
 
+def _build_multi_tab_ui(top_id: str, title: str, sub_tabs: list[MultiSubTab]):
+    return ui.nav_panel(
+        title,
+        ui.layout_sidebar(
+            multi_pjnz_panel_ui(
+                top_id,
+                goals_choices=_pjnz_stems_goals_initial,
+                year_min=_DEFAULT_YEAR_MIN,
+                year_max=_DEFAULT_YEAR_MAX,
+            ),
+            ui.navset_tab(*[
+                ui.nav_panel(
+                    st.label,
+                    multi_plot_panel_ui(
+                        st.id,
+                        indicator_names=st.indicator_names,
+                        default_indicators=st.default_indicators,
+                    ),
+                )
+                for st in sub_tabs
+            ]),
+            fillable=True,
+        ),
+    )
+
+
+def _wire_multi_tab_server(top_id: str, sub_tabs: list[MultiSubTab]):
+    data_by_pjnz, year_range, model = multi_pjnz_panel_server(
+        top_id,
+        pjnz_files=pjnz_files,
+        pjnz_stems_goals=pjnz_stems_goals,
+        pjnz_stems_aim=pjnz_stems_aim,
+        goals_run_fn=_goals_run_fn,
+        aim_run_fn=_aim_run_fn,
+    )
+    for st in sub_tabs:
+        multi_plot_panel_server(
+            st.id,
+            data_by_pjnz=data_by_pjnz,
+            year_range=year_range,
+            indicator_map=INDICATOR_MAP,
+            sources=lambda: _GOALS_SOURCES if model() == "Goals" else _AIM_SOURCES,
+        )
+
+
 app_ui = ui.page_navbar(
     _build_tab_ui(
         "aim", "AIM", _AIM_SUBTABS, pjnz_choices=_pjnz_stems_aim_initial,
@@ -438,6 +506,7 @@ app_ui = ui.page_navbar(
         "eppasm", "EPPASM", _EPPASM_SUBTABS,
         pjnz_choices=_pjnz_choices_eppasm_initial, show_rerun_button=True,
     ),
+    _build_multi_tab_ui("multi", "Multi PJNZ", _MULTI_SUBTABS),
     id="main_nav",
     title="Leapfrog Comparison",
     header=ui.head_content(ui.tags.script(src="https://cdn.plot.ly/plotly-latest.min.js")),
@@ -459,6 +528,7 @@ def server(input, output, session):
         "eppasm", _eppasm_run_fn, _EPPASM_SUBTABS, show_rerun_button=True,
         pjnz_choices=pjnz_choices_eppasm,
     )
+    _wire_multi_tab_server("multi", _MULTI_SUBTABS)
 
 
 app = App(app_ui, server)
