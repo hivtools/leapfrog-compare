@@ -38,8 +38,15 @@ from leapfrog_compare.spectrum_runner import run_spectrum
 _DEFAULT_YEAR_MIN = 1970
 _DEFAULT_YEAR_MAX = 2030
 
+def _iter_pjnz_files():
+    """Yield *.pjnz files in PJNZ_DIR, matched case-insensitively — glob() is
+    case-sensitive on Linux, and PJNZ files are sometimes named with a
+    lowercase extension (e.g. Angola_Final_200526.pjnz)."""
+    return (p for p in config.PJNZ_DIR.expanduser().iterdir() if p.suffix.lower() == ".pjnz")
+
+
 def _scan_pjnz_files() -> dict[str, Path]:
-    return {p.stem: p for p in sorted(config.PJNZ_DIR.expanduser().glob("*.PJNZ"))}
+    return {p.stem: p for p in sorted(_iter_pjnz_files())}
 
 
 def _pjnz_fingerprint() -> list[tuple[str, int, int]]:
@@ -48,7 +55,7 @@ def _pjnz_fingerprint() -> list[tuple[str, int, int]]:
     added, removed, or edited — without opening/parsing anything."""
     return sorted(
         (p.name, p.stat().st_mtime_ns, p.stat().st_size)
-        for p in config.PJNZ_DIR.expanduser().glob("*.PJNZ")
+        for p in _iter_pjnz_files()
     )
 
 
@@ -615,7 +622,13 @@ app_ui = ui.page_navbar(
     ),
     id="main_nav",
     title="Leapfrog Comparison",
-    header=ui.head_content(ui.tags.script(src="https://cdn.plot.ly/plotly-latest.min.js")),
+    header=ui.head_content(
+        ui.tags.script(src="https://cdn.plot.ly/plotly-latest.min.js"),
+        ui.tags.link(
+            rel="icon",
+            href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐸</text></svg>",
+        ),
+    ),
     fillable=True,
 )
 

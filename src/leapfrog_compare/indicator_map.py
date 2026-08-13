@@ -52,6 +52,7 @@ from SpectrumCommon.Const.AM.AMTags import (  # type: ignore[import-untyped]
     AM_CD4DistributionChildTag,
     AM_HIVBySingleAgeTag,
     AM_NewInfectionsBySingleAgeTag,
+    AM_ChildNeedPMTCTTag,
     AM_OnARTBySingleAgeTag,
 )
 from SpectrumCommon.Const.DP.DPConst import (  # type: ignore[import-untyped]
@@ -68,8 +69,13 @@ from SpectrumCommon.Const.DP.DPConst import (  # type: ignore[import-untyped]
 from SpectrumCommon.Const.DP.DPTags import (  # type: ignore[import-untyped]
     DP_BigPopTag,
     DP_BirthsTag,
+    DP_DeathsTag,
 )
-from SpectrumCommon.Const.GB.GBConst import GB_BothSexes  # type: ignore[import-untyped]
+from SpectrumCommon.Const.GB.GBConst import (  # type: ignore[import-untyped]
+    GB_BothSexes,
+    GB_Female,
+    GB_Male,
+)
 from SpectrumCommon.Const.HV.HVTags import (  # type: ignore[import-untyped]
     HV_AdultsTag,
     HV_AIDSDeathsTag,
@@ -265,6 +271,30 @@ def _disagg_prevalence() -> Callable:
     return fn
 
 
+def _lf_pregnant_prevalence_disagg(output: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """Prevalence (%) in pregnant women = pmtct_need (HIV+ pregnant women needing
+    PMTCT) / births — both already flat per-year totals (n_years,), no age/sex
+    axis to sum over (see the "Total Births" indicator's o["births"] usage).
+    Inherently female-only, so disagg_sex only changes the line label, never
+    adds a Male line."""
+    need = output["pmtct_need"]
+    births = output["births"]
+    data = 100.0 * need / np.where(births == 0, np.nan, births)
+    return [("Female", data)] if disagg_sex else [("Total", data)]
+
+
+def _spec_pregnant_prevalence_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """Prevalence (%) in pregnant women = AM_ChildNeedPMTCT_V1 (children needing
+    PMTCT) / DP_Births_V1, mirroring the dp_aim column's pmtct_need / births
+    computation. Both are year-only (no age/sex axis — see _spec_births_disagg
+    for DP_Births_V1's 'Both Sexes'/'All Ages' pre-aggregated total). Inherently
+    female-only, so disagg_sex only changes the line label."""
+    need = np.array(modvars[AM_ChildNeedPMTCTTag])
+    births = np.array(modvars[DP_BirthsTag])[GB_BothSexes, DP_AllAges, :]
+    data = 100.0 * need / np.where(births == 0, np.nan, births)
+    return [("Female", data)] if disagg_sex else [("Total", data)]
+
+
 def _disagg_incidence() -> Callable:
     """Incidence (%) restricted to ages 15-49. Always called via _no_age_disagg,
     which forces disagg_age=False, so the age range is hardcoded rather than
@@ -426,6 +456,37 @@ _am_aidsdeath_disagg = _am_disagg_from_array(
     lambda modvars: np.array(modvars[AM_AIDSDeathsARTSingleAgeTag]) + np.array(modvars[AM_AIDSDeathsNoARTSingleAgeTag])
 )
 
+
+def _lf_total_deaths_disagg(output: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """Total deaths = background non-HIV deaths + HIV deaths + excess non-AIDS
+    deaths, each (81, 2, n_years). Never branches on disagg_age (same idiom as
+    _spec_hivpop_disagg / "Total Births"'s dp_aim fn) — no age breakdown is
+    offered for either source, since Spectrum's DP_Deaths_V1 is only available
+    in 5-year age bands, not single-year-of-age."""
+    arr = (
+        output["p_deaths_background_totpop"]
+        + output["p_hiv_deaths"]
+        + output["p_deaths_excess_nonaids"]
+    )
+    if disagg_sex:
+        return [("Male", _sum_std(arr, sex=0)), ("Female", _sum_std(arr, sex=1))]
+    return [("Total", _sum_std(arr))]
+
+
+def _spec_deaths_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """DP_Deaths_V1 (3, 18, n_years): sex x 5-year age band x year, same shape as
+    DP_Births_V1 — but unlike DP_Births_V1's GB_BothSexes row (a genuine
+    pre-aggregated total), DP_Deaths_V1's GB_BothSexes row isn't reliable, so the
+    total is always Male + Female summed manually, matching this module's usual
+    convention for every other non-Births modvar. No age disaggregation offered
+    (deaths are only available in 5-year age bands here)."""
+    arr = np.array(modvars[DP_DeathsTag])
+    male = arr[GB_Male, DP_AllAges, :]
+    female = arr[GB_Female, DP_AllAges, :]
+    if disagg_sex:
+        return [("Male", male), ("Female", female)]
+    return [("Total", male + female)]
+
 # ---------------------------------------------------------------------------
 # Single-year-of-age variants for the "By age" sub-tab (see IndicatorDef.age_profile
 # below). Same underlying arrays/logic as the 5-year-bucketed versions above,
@@ -548,6 +609,41 @@ def _disagg_std_1549(key: str) -> Callable:
             series.append((sex_label if sex_label else "15-49", data))
         return series
     return fn
+
+
+def _lf_total_deaths_1549_disagg(output: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """Total deaths restricted to ages 15-49 (see _lf_total_deaths_disagg for the
+    all-ages version). Returns [] when disagg_age=True, matching every other
+    15-49 indicator's _disagg_std_1549-style idiom."""
+    if disagg_age:
+        return []
+    arr = (
+        output["p_deaths_background_totpop"]
+        + output["p_hiv_deaths"]
+        + output["p_deaths_excess_nonaids"]
+    )
+    if disagg_sex:
+        return [("Male", _sum_std(arr, slice(15, 50), 0)), ("Female", _sum_std(arr, slice(15, 50), 1))]
+    return [("15-49", _sum_std(arr, slice(15, 50)))]
+
+
+def _spec_deaths_1549_disagg(modvars: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+    """DP_Deaths_V1 restricted to the 15-49 age bands: the 5-year bands 15-19..45-49
+    are age-axis indices 4-10 (AGE_GROUPS index 3-9, offset +1 for the 'All Ages'
+    slot at index 0). Unlike the all-ages version, GB_BothSexes can't be used
+    directly here — that pre-aggregated total is only valid for the full
+    DP_AllAges slice — so Male+Female bands are summed manually, matching
+    _am_disagg_1549's convention."""
+    if disagg_age:
+        return []
+    arr = np.array(modvars[DP_DeathsTag])
+    if disagg_sex:
+        return [
+            ("Male", arr[GB_Male, 4:11, :].sum(axis=0)),
+            ("Female", arr[GB_Female, 4:11, :].sum(axis=0)),
+        ]
+    total = arr[GB_Male, 4:11, :].sum(axis=0) + arr[GB_Female, 4:11, :].sum(axis=0)
+    return [("15-49", total)]
 
 
 def _no_age_disagg(disagg_fn: Callable) -> Callable:
@@ -1085,6 +1181,19 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
             "spectrum_aim": _am_art_disagg_single,
         },
     )),
+    # Total deaths / prevalence in pregnant women: no "goals" key — the Leapfrog
+    # Goals tab shows only the dp_aim/spectrum lines for these, since there's no
+    # separate Goals-native output to compare (see _goals_run_fn in app.py).
+    ("Total deaths", IndicatorDef(disagg={
+        "dp_aim": _lf_total_deaths_disagg,
+        "spectrum": _spec_deaths_disagg,
+        "spectrum_aim": _spec_deaths_disagg,
+    })),
+    ("Prevalence in pregnant women (%)", IndicatorDef(disagg={
+        "dp_aim": _lf_pregnant_prevalence_disagg,
+        "spectrum": _spec_pregnant_prevalence_disagg,
+        "spectrum_aim": _spec_pregnant_prevalence_disagg,
+    })),
 
     # --- 15-49 indicators: all three sources; age disagg disabled ---
     ("Total population (15-49)", IndicatorDef(disagg={
@@ -1110,6 +1219,12 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
         "spectrum": _spec_aidsdeath_1549_disagg,
         "spectrum_aim": _am_aidsdeath_1549_disagg,
         "goals": _as_full_disagg(_goals_total_deaths_hiv),
+    })),
+    # No "goals" key: no separate Goals-native total-deaths output to compare.
+    ("Total deaths (15-49)", IndicatorDef(disagg={
+        "dp_aim": _lf_total_deaths_1549_disagg,
+        "spectrum": _spec_deaths_1549_disagg,
+        "spectrum_aim": _spec_deaths_1549_disagg,
     })),
     ("Prevalence (15-49) (%)", IndicatorDef(disagg={
         "dp_aim": _no_age_disagg(_disagg_prevalence()),
@@ -1137,11 +1252,12 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
 ALL_AGES_INDICATOR_NAMES: list[str] = [
     "Total population", "Total Births", "HIV population",
     "New HIV infections", "AIDS deaths", "Total number receiving ART (15+)",
+    "Total deaths", "Prevalence in pregnant women (%)",
 ]
 FIFTEEN_49_INDICATOR_NAMES: list[str] = [
     "Total population (15-49)", "Total PLHIV (15-49)", "New HIV infections (15-49)",
-    "AIDS deaths (15-49)", "Prevalence (15-49) (%)", "Incidence (15-49) (%)",
-    "Total on ART (15-49)",
+    "AIDS deaths (15-49)", "Total deaths (15-49)", "Prevalence (15-49) (%)",
+    "Incidence (15-49) (%)", "Total on ART (15-49)",
 ]
 # Indicators with a real single-year-of-age breakdown available (i.e. a
 # non-empty `age_profile` dict) — populates the "By age" sub-tab's indicator
