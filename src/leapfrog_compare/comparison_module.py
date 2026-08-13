@@ -24,8 +24,9 @@ from shiny import module, reactive, render, ui
 
 from leapfrog_compare.indicator_map import cd4_facet_desc
 from leapfrog_compare.plotting import (
-    ComparisonSource, render_age_profile, render_comparison, render_multi_pjnz_comparison,
-    render_multi_risk_group_comparison, render_risk_group_comparison,
+    ComparisonSource, default_visible_keys, render_age_profile, render_comparison,
+    render_multi_pjnz_comparison, render_multi_risk_group_comparison,
+    render_risk_group_comparison, visible_sources,
 )
 
 # (data_by_source, output_years)
@@ -644,8 +645,15 @@ def multi_plot_panel_ui(
     *,
     indicator_names: list[str],
     default_indicators: list[str],
+    initial_sources: list[ComparisonSource],
 ):
     return ui.div(
+        ui.input_checkbox_group(
+            "visible_sources",
+            "Show lines",
+            choices={s.key: s.label for s in initial_sources},
+            selected=default_visible_keys(initial_sources),
+        ),
         ui.input_selectize(
             "indicators",
             label="Indicators",
@@ -674,6 +682,20 @@ def multi_plot_panel_server(
     sources: Callable[[], list[ComparisonSource]],
     no_pjnz_message: str = "Select at least one PJNZ file.",
 ):
+    @reactive.effect
+    def _refresh_source_choices():
+        """Re-fires whenever the Model switch changes `sources()`'s value (Goals
+        vs DP/AIM have different source keys/labels) — same trigger pattern as
+        `_refresh_pjnz_choices`. Resets the checkbox selection back to
+        `default_visible`, mirroring how the PJNZ selection also resets on the
+        same switch."""
+        srcs = sources()
+        ui.update_checkbox_group(
+            "visible_sources",
+            choices={s.key: s.label for s in srcs},
+            selected=default_visible_keys(srcs),
+        )
+
     @output
     @render.ui
     def comparison_plot():
@@ -704,11 +726,12 @@ def multi_plot_panel_server(
         data_by_source_map = {stem: result[0] for stem, result in data.items()}
         output_years_by_pjnz = {stem: result[1] for stem, result in data.items()}
 
+        active_sources = visible_sources(sources(), input.visible_sources() or ())
         fig = render_multi_pjnz_comparison(
             indicator_map=indicator_map,
             data_by_pjnz=data_by_source_map,
             output_years_by_pjnz=output_years_by_pjnz,
-            sources=sources(),
+            sources=active_sources,
             selected_indicators=selected_indicators,
             pjnz_stems=stems,
             year_start=year_start,
@@ -728,8 +751,14 @@ def multi_plot_panel_server(
 # ---------------------------------------------------------------------------
 
 @module.ui
-def multi_risk_group_panel_ui():
+def multi_risk_group_panel_ui(*, sources: list[ComparisonSource]):
     return ui.div(
+        ui.input_checkbox_group(
+            "visible_sources",
+            "Show lines",
+            choices={s.key: s.label for s in sources},
+            selected=default_visible_keys(sources),
+        ),
         ui.output_ui("comparison_plot"),
         style="overflow-x: auto; overflow-y: auto; padding-top: 12px;",
     )
@@ -775,9 +804,10 @@ def multi_risk_group_panel_server(
         data_by_source_map = {stem: result[0] for stem, result in data.items()}
         output_years_by_pjnz = {stem: result[1] for stem, result in data.items()}
 
+        active_sources = visible_sources(sources, input.visible_sources() or ())
         fig = render_multi_risk_group_comparison(
             risk_groups=risk_groups,
-            sources=sources,
+            sources=active_sources,
             data_by_pjnz=data_by_source_map,
             output_years_by_pjnz=output_years_by_pjnz,
             compute_fns=compute_fns,
@@ -800,8 +830,14 @@ def multi_risk_group_panel_server(
 # ---------------------------------------------------------------------------
 
 @module.ui
-def multi_facet_panel_ui(*, indicator_names: list[str]):
+def multi_facet_panel_ui(*, indicator_names: list[str], initial_sources: list[ComparisonSource]):
     return ui.div(
+        ui.input_checkbox_group(
+            "visible_sources",
+            "Show lines",
+            choices={s.key: s.label for s in initial_sources},
+            selected=default_visible_keys(initial_sources),
+        ),
         ui.input_selectize(
             "indicator",
             label="Indicator",
@@ -833,6 +869,17 @@ def multi_facet_panel_server(
     title_prefix: str,
     no_pjnz_message: str = "Select at least one PJNZ file.",
 ):
+    @reactive.effect
+    def _refresh_source_choices():
+        """Same reactive-refresh pattern as `multi_plot_panel_server` — `sources()`
+        changes value when the Model switch flips."""
+        srcs = sources()
+        ui.update_checkbox_group(
+            "visible_sources",
+            choices={s.key: s.label for s in srcs},
+            selected=default_visible_keys(srcs),
+        )
+
     @output
     @render.ui
     def comparison_plot():
@@ -865,9 +912,10 @@ def multi_facet_panel_server(
         ind_def = facet_map[indicator]
         facet_desc = cd4_facet_desc(ind_def.cd4_labels)
 
+        active_sources = visible_sources(sources(), input.visible_sources() or ())
         fig = render_multi_risk_group_comparison(
             risk_groups=[(lbl, i) for i, lbl in enumerate(ind_def.cd4_labels)],
-            sources=sources(),
+            sources=active_sources,
             data_by_pjnz=data_by_source_map,
             output_years_by_pjnz=output_years_by_pjnz,
             compute_fns=ind_def.compute_fns,

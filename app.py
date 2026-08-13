@@ -106,13 +106,13 @@ _pjnz_choices_eppasm_initial = {
 }
 
 _GOALS_SOURCES = [
-    ComparisonSource(key="dp_aim", label="Leapfrog DP/AIM", dash=None, primary=True),
+    ComparisonSource(key="dp_aim", label="Leapfrog DP/AIM", dash=None, primary=True, default_visible=True),
     ComparisonSource(key="spectrum", label="Spectrum", dash="dash", needs_offset_align=True),
     ComparisonSource(key="goals", label="Leapfrog Goals", dash="dot", supports_age_facet=False),
 ]
 
 _AIM_SOURCES = [
-    ComparisonSource(key="dp_aim", label="Leapfrog AIM", dash=None, primary=True),
+    ComparisonSource(key="dp_aim", label="Leapfrog AIM", dash=None, primary=True, default_visible=True),
     ComparisonSource(key="spectrum_aim", label="Spectrum", dash="dash", needs_offset_align=True),
 ]
 
@@ -246,7 +246,7 @@ class MultiFacetSubTab:
 
 
 _GOALS_RISKGROUP_SOURCES = [
-    ComparisonSource(key="goals", label="Leapfrog Goals", dash=None),
+    ComparisonSource(key="goals", label="Leapfrog Goals", dash=None, default_visible=True),
     # HV_AdultsTag/HV_NewInfectionsTag (read by compute_rg_spectrum/
     # compute_new_infections_rg_spectrum) are the same raw modvar arrays
     # _spec_newinf_disagg et al. read for _GOALS_SOURCES, which needs
@@ -255,7 +255,7 @@ _GOALS_RISKGROUP_SOURCES = [
 ]
 
 _GOALS_CHILD_CD4_SOURCES = [
-    ComparisonSource(key="dp_aim", label="Leapfrog Goals", dash=None),
+    ComparisonSource(key="dp_aim", label="Leapfrog Goals", dash=None, default_visible=True),
     ComparisonSource(key="spectrum", label="Spectrum", dash="dash", needs_offset_align=True),
 ]
 
@@ -540,16 +540,24 @@ def _build_multi_tab_ui(
                         st.id,
                         indicator_names=st.indicator_names,
                         default_indicators=st.default_indicators,
+                        initial_sources=_GOALS_SOURCES,
                     ),
                 )
                 for st in sub_tabs
             ], *[
-                ui.nav_panel(rgt.label, multi_risk_group_panel_ui(rgt.id))
+                ui.nav_panel(
+                    rgt.label,
+                    multi_risk_group_panel_ui(rgt.id, sources=_GOALS_RISKGROUP_SOURCES),
+                )
                 for rgt in risk_group_subtabs
             ], *[
                 ui.nav_panel(
                     ft.label,
-                    multi_facet_panel_ui(ft.id, indicator_names=ft.indicator_names),
+                    multi_facet_panel_ui(
+                        ft.id,
+                        indicator_names=ft.indicator_names,
+                        initial_sources=_GOALS_CHILD_CD4_SOURCES,
+                    ),
                 )
                 for ft in facet_subtabs
             ]),

@@ -47,6 +47,25 @@ class ComparisonSource:
     an indicator has no real age breakdown (repeats its flat total across every
     column, matching the original DP/AIM behavior). Non-primary sources are
     hidden entirely from the age-facet view for indicators lacking age labels."""
+    default_visible: bool = False
+    """True marks this source pre-checked in the Multi PJNZ tab's per-panel
+    "Show lines" checkboxes. Read only by the Multi PJNZ panel servers via
+    `default_visible_keys`/`visible_sources` below — single-PJNZ tabs render
+    every configured source regardless of this flag."""
+
+
+def default_visible_keys(sources: list[ComparisonSource]) -> list[str]:
+    """Keys of the sources pre-checked in a Multi PJNZ panel's "Show lines"
+    checkbox group."""
+    return [s.key for s in sources if s.default_visible]
+
+
+def visible_sources(sources: list[ComparisonSource], visible_keys) -> list[ComparisonSource]:
+    """Filters `sources` down to those whose key is in `visible_keys`, preserving
+    order. Used by the Multi PJNZ panel servers to apply the "Show lines"
+    checkbox selection before rendering."""
+    keys = set(visible_keys)
+    return [s for s in sources if s.key in keys]
 
 
 def _trace_label(source: ComparisonSource, demo: str) -> str:
