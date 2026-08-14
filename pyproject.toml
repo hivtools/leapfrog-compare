@@ -1,6 +1,6 @@
 [project]
 name = "leapfrog-compare"
-version = "0.0.4"
+version = "0.0.5"
 description = "Compare Spectrum extract output with leapfrog-goals model output"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,9 +12,9 @@ dependencies = [
     "plotly>=5.0",
     "avenir-spectrum-common>=0.1.21",
     "avenir-spectrum-import-pjnz>=0.1.14",
-    "leapfrog-goals>=0.0.12",
+    "leapfrog-goals>=1.0.0",
     "shinywidgets>=0.8.1",
-    "leapfrog-py>=1.0.10",
+    "leapfrog-py>=1.0.13",
 ]
 
 # Uncomment and set the path to use local version of leapfrog-goals when developing
