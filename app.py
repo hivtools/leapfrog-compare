@@ -27,8 +27,7 @@ from leapfrog_compare.eppasm_runner import run_eppasm_both
 from leapfrog_compare.indicator_map import (
     AGE_LABELS, AGE_PROFILE_INDICATOR_NAMES, ALL_AGES_INDICATOR_NAMES, CHILD_CD4_INDICATOR_MAP,
     CHILD_CD4_INDICATOR_NAMES, FIFTEEN_49_INDICATOR_NAMES, INDICATOR_MAP,
-    RISK_GROUPS, compute_new_infections_rg_goals, compute_new_infections_rg_spectrum,
-    compute_rg_goals, compute_rg_spectrum,
+    RISK_GROUP_INDICATOR_MAP, RISK_GROUP_INDICATOR_NAMES, RISK_GROUPS,
 )
 from leapfrog_compare.pjnz_classify import is_goals_pjnz
 from leapfrog_compare.pjnz_runner import run_pjnz
@@ -155,12 +154,15 @@ class SubTab:
 
 @dataclass
 class RiskGroupSubTab:
-    """A sub-tab with the dedicated one-row-per-risk-group layout (no indicator
-    selector, no age faceting) — see plotting.render_risk_group_comparison."""
+    """A sub-tab with the dedicated one-row-per-risk-group layout (no age faceting)
+    — see plotting.render_risk_group_comparison. `indicator_map` picks between
+    risk-group-faceted indicators (population share vs. new infections) via a
+    single-select dropdown — see comparison_module.risk_group_panel_ui/server and
+    indicator_map.RiskGroupIndicatorDef."""
     id: str
     label: str
-    compute_fns: dict[str, Any]
-    title_prefix: str
+    indicator_names: list[str]
+    indicator_map: dict[str, Any]
 
 
 @dataclass
@@ -222,11 +224,13 @@ class MultiRiskGroupSubTab:
     (v1 multi-file plots drop sex disaggregation entirely, per ADR-0003). Always wired
     with `_GOALS_RISKGROUP_SOURCES`: risk-group data only exists under the "goals"/
     "spectrum" keys, so under Model=DP/AIM these sub-tabs render nothing, matching the
-    missing-key-skip convention every other Multi PJNZ sub-tab already relies on."""
+    missing-key-skip convention every other Multi PJNZ sub-tab already relies on.
+    `indicator_map` picks between risk-group-faceted indicators via a single-select
+    dropdown, same as RiskGroupSubTab."""
     id: str
     label: str
-    compute_fns: dict[str, Any]
-    title_prefix: str
+    indicator_names: list[str]
+    indicator_map: dict[str, Any]
 
 
 @dataclass
@@ -291,13 +295,7 @@ _GOALS_SUBTABS = [
 _GOALS_RISKGROUP_SUBTABS = [
     RiskGroupSubTab(
         id="goals_riskgroups", label="Risk groups",
-        compute_fns={"goals": compute_rg_goals, "spectrum": compute_rg_spectrum},
-        title_prefix="Risk groups",
-    ),
-    RiskGroupSubTab(
-        id="goals_newinfections", label="New infections",
-        compute_fns={"goals": compute_new_infections_rg_goals, "spectrum": compute_new_infections_rg_spectrum},
-        title_prefix="New infections by risk group",
+        indicator_names=RISK_GROUP_INDICATOR_NAMES, indicator_map=RISK_GROUP_INDICATOR_MAP,
     ),
 ]
 
@@ -347,13 +345,7 @@ _MULTI_SUBTABS = [
 _MULTI_RISKGROUP_SUBTABS = [
     MultiRiskGroupSubTab(
         id="multi_riskgroups", label="Risk groups",
-        compute_fns={"goals": compute_rg_goals, "spectrum": compute_rg_spectrum},
-        title_prefix="Risk groups",
-    ),
-    MultiRiskGroupSubTab(
-        id="multi_newinfections", label="New infections",
-        compute_fns={"goals": compute_new_infections_rg_goals, "spectrum": compute_new_infections_rg_spectrum},
-        title_prefix="New infections by risk group",
+        indicator_names=RISK_GROUP_INDICATOR_NAMES, indicator_map=RISK_GROUP_INDICATOR_MAP,
     ),
 ]
 
@@ -432,7 +424,7 @@ def _build_tab_ui(
                 )
                 for st in sub_tabs
             ], *[
-                ui.nav_panel(rgt.label, risk_group_panel_ui(rgt.id))
+                ui.nav_panel(rgt.label, risk_group_panel_ui(rgt.id, indicator_names=rgt.indicator_names))
                 for rgt in risk_group_subtabs
             ], *[
                 ui.nav_panel(
@@ -492,8 +484,7 @@ def _wire_tab_server(
             pjnz_label=pjnz_label,
             risk_groups=RISK_GROUPS,
             sources=_GOALS_RISKGROUP_SOURCES,
-            compute_fns=rgt.compute_fns,
-            title_prefix=rgt.title_prefix,
+            indicator_map=rgt.indicator_map,
         )
     for ft in facet_subtabs:
         facet_panel_server(
@@ -547,7 +538,9 @@ def _build_multi_tab_ui(
             ], *[
                 ui.nav_panel(
                     rgt.label,
-                    multi_risk_group_panel_ui(rgt.id, sources=_GOALS_RISKGROUP_SOURCES),
+                    multi_risk_group_panel_ui(
+                        rgt.id, sources=_GOALS_RISKGROUP_SOURCES, indicator_names=rgt.indicator_names,
+                    ),
                 )
                 for rgt in risk_group_subtabs
             ], *[
@@ -596,8 +589,7 @@ def _wire_multi_tab_server(
             year_range=year_range,
             risk_groups=RISK_GROUPS,
             sources=_GOALS_RISKGROUP_SOURCES,
-            compute_fns=rgt.compute_fns,
-            title_prefix=rgt.title_prefix,
+            indicator_map=rgt.indicator_map,
         )
     for ft in facet_subtabs:
         multi_facet_panel_server(

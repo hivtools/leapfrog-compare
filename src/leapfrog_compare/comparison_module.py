@@ -244,14 +244,22 @@ def plot_panel_server(
 
 
 # ---------------------------------------------------------------------------
-# Risk-group panel: "By sex" checkbox only (no indicator selector, no age
-# faceting) + a one-row-per-risk-group rendered plot. Used by the Goals tab's
-# "Risk groups" and "New infections" sub-tabs.
+# Risk-group panel: a single-select Indicator dropdown (choosing between
+# risk-group-faceted indicators, e.g. population share vs. new infections,
+# each with its own compute_fns/title/units — see indicator_map.RiskGroupIndicatorDef)
+# + a "By sex" checkbox + a one-row-per-risk-group rendered plot. Used by the
+# Goals tab's "Risk groups" sub-tab.
 # ---------------------------------------------------------------------------
 
 @module.ui
-def risk_group_panel_ui():
+def risk_group_panel_ui(*, indicator_names: list[str]):
     return ui.div(
+        ui.input_selectize(
+            "indicator",
+            label="Indicator",
+            choices=indicator_names,
+            selected=indicator_names[0] if indicator_names else None,
+        ),
         ui.div(
             ui.input_checkbox("disagg_sex", "By sex", value=False),
             style="margin: 6px 0 12px 0;",
@@ -275,8 +283,9 @@ def risk_group_panel_server(
     pjnz_label: Callable[[], str],
     risk_groups: list[tuple[str, int]],
     sources: list[ComparisonSource],
-    compute_fns: dict[str, Any],
-    title_prefix: str,
+    # Indicator name -> object with `.compute_fns`, `.title_prefix`, `.y_title`
+    # (duck-typed to indicator_map.RiskGroupIndicatorDef).
+    indicator_map: dict[str, Any],
     no_pjnz_message: str = "No PJNZ files found, check 'PJNZ_DIR' in 'config.py'.",
 ):
     @output
@@ -294,6 +303,11 @@ def risk_group_panel_server(
                 )
             return ui.p(no_pjnz_message)
 
+        indicator = input.indicator()
+        if not indicator or indicator not in indicator_map:
+            return ui.p("Select an indicator.")
+
+        ind_def = indicator_map[indicator]
         data_by_source, output_years = result
         year_start, year_end = year_range()
         disagg_sex = input.disagg_sex()
@@ -302,12 +316,13 @@ def risk_group_panel_server(
             risk_groups=risk_groups,
             sources=sources,
             data_by_source=data_by_source,
-            compute_fns=compute_fns,
+            compute_fns=ind_def.compute_fns,
             output_years=output_years,
             year_start=year_start,
             year_end=year_end,
             disagg_sex=disagg_sex,
-            title=f"{title_prefix} — {pjnz_label()}",
+            title=f"{ind_def.title_prefix} — {pjnz_label()}",
+            y_title=ind_def.y_title,
         )
         return ui.HTML(html)
 
@@ -743,21 +758,28 @@ def multi_plot_panel_server(
 
 
 # ---------------------------------------------------------------------------
-# Multi PJNZ risk-group panel: the one-row-per-risk-group layout (no indicator
-# selector, no "By sex" checkbox — v1 multi-file plots are totals-only per
-# ADR-0003) driving a rendered plot with one line per (PJNZ file, source) pair
-# per row — see plotting.render_multi_risk_group_comparison. Used by the Multi
-# PJNZ tab's "Risk groups" and "New infections" sub-tabs.
+# Multi PJNZ risk-group panel: a single-select Indicator dropdown (same
+# indicator_map as the single-PJNZ risk_group_panel above; no "By sex"
+# checkbox — v1 multi-file plots are totals-only per ADR-0003) driving a
+# rendered plot with one line per (PJNZ file, source) pair per row — see
+# plotting.render_multi_risk_group_comparison. Used by the Multi PJNZ tab's
+# "Risk groups" sub-tab.
 # ---------------------------------------------------------------------------
 
 @module.ui
-def multi_risk_group_panel_ui(*, sources: list[ComparisonSource]):
+def multi_risk_group_panel_ui(*, sources: list[ComparisonSource], indicator_names: list[str]):
     return ui.div(
         ui.input_checkbox_group(
             "visible_sources",
             "Show lines",
             choices={s.key: s.label for s in sources},
             selected=default_visible_keys(sources),
+        ),
+        ui.input_selectize(
+            "indicator",
+            label="Indicator",
+            choices=indicator_names,
+            selected=indicator_names[0] if indicator_names else None,
         ),
         ui.output_ui("comparison_plot"),
         style="overflow-x: auto; overflow-y: auto; padding-top: 12px;",
@@ -774,8 +796,9 @@ def multi_risk_group_panel_server(
     year_range: Callable[[], tuple[int, int]],
     risk_groups: list[tuple[str, int]],
     sources: list[ComparisonSource],
-    compute_fns: dict[str, Any],
-    title_prefix: str,
+    # Indicator name -> object with `.compute_fns`, `.title_prefix`, `.y_title`
+    # (duck-typed to indicator_map.RiskGroupIndicatorDef).
+    indicator_map: dict[str, Any],
     no_pjnz_message: str = "Select at least one PJNZ file.",
 ):
     @output
@@ -799,6 +822,11 @@ def multi_risk_group_panel_server(
                 return ui.div(*error_banner)
             return ui.p(no_pjnz_message)
 
+        indicator = input.indicator()
+        if not indicator or indicator not in indicator_map:
+            return ui.div(*error_banner, ui.p("Select an indicator."))
+
+        ind_def = indicator_map[indicator]
         year_start, year_end = year_range()
         stems = list(data.keys())
         data_by_source_map = {stem: result[0] for stem, result in data.items()}
@@ -810,11 +838,12 @@ def multi_risk_group_panel_server(
             sources=active_sources,
             data_by_pjnz=data_by_source_map,
             output_years_by_pjnz=output_years_by_pjnz,
-            compute_fns=compute_fns,
+            compute_fns=ind_def.compute_fns,
             pjnz_stems=stems,
             year_start=year_start,
             year_end=year_end,
-            title=f"{title_prefix} — Multi PJNZ comparison",
+            title=f"{ind_def.title_prefix} — Multi PJNZ comparison",
+            y_title=ind_def.y_title,
         )
         html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
         return ui.div(*error_banner, ui.HTML(html))

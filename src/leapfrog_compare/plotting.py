@@ -341,12 +341,16 @@ def render_risk_group_comparison(
     year_end: int,
     disagg_sex: bool,
     title: str,
+    y_title: str | None = None,
 ) -> str:
     """One row per risk group (not per indicator) — used by the Goals tab's "Risk
     groups" and "New infections" sub-tabs. Each `sources` entry's `compute_fns[key]`
     is called once and returns `list[(rg_name, demo, ndarray)]`, distributed into the
     row matching `rg_name`. Unlike `render_comparison`, there is no indicator selector
-    or age-facet mode here — the risk-group axis always drives the rows."""
+    or age-facet mode here — the risk-group axis always drives the rows. `y_title`
+    labels the shared y-axis unit (e.g. "% of population", "New infections") since
+    the subplot titles are risk-group names, not indicator names, and give no clue
+    what's being measured otherwise."""
     years_arr = np.array(list(output_years))
     mask = (years_arr >= year_start) & (years_arr <= year_end)
     x_years = years_arr[mask].tolist()
@@ -387,7 +391,10 @@ def render_risk_group_comparison(
         range=[year_start - 1, year_end + 1],
         tickformat="d", tickangle=45,
     )
-    fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
+    fig.update_yaxes(
+        showgrid=True, gridcolor="#e5e5e5", rangemode="tozero",
+        title_text=y_title, title_font=dict(size=11),
+    )
 
     fig.update_layout(
         height=max(500, n_rg * 250),
@@ -412,6 +419,7 @@ def render_multi_risk_group_comparison(
     year_start: int,
     year_end: int,
     title: str,
+    y_title: str | None = None,
 ) -> go.Figure:
     """Multi-file counterpart of `render_risk_group_comparison`, used by the Multi PJNZ
     tab's "Risk groups"/"New infections" sub-tabs: one row per risk group (not per
@@ -471,7 +479,10 @@ def render_multi_risk_group_comparison(
         range=[year_start - 1, year_end + 1],
         tickformat="d", tickangle=45,
     )
-    fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5", rangemode="tozero")
+    fig.update_yaxes(
+        showgrid=True, gridcolor="#e5e5e5", rangemode="tozero",
+        title_text=y_title, title_font=dict(size=11),
+    )
 
     fig.update_layout(
         height=max(500, n_rg * 250),

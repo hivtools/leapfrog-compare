@@ -460,9 +460,9 @@ _am_aidsdeath_disagg = _am_disagg_from_array(
 def _lf_total_deaths_disagg(output: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
     """Total deaths = background non-HIV deaths + HIV deaths + excess non-AIDS
     deaths, each (81, 2, n_years). Never branches on disagg_age (same idiom as
-    _spec_hivpop_disagg / "Total Births"'s dp_aim fn) — no age breakdown is
-    offered for either source, since Spectrum's DP_Deaths_V1 is only available
-    in 5-year age bands, not single-year-of-age."""
+    "Total Births"'s dp_aim fn) — no age breakdown is offered for either source,
+    since Spectrum's DP_Deaths_V1 is only available in 5-year age bands, not
+    single-year-of-age."""
     arr = (
         output["p_deaths_background_totpop"]
         + output["p_hiv_deaths"]
@@ -506,31 +506,6 @@ _am_aidsdeath_disagg_single = _am_disagg_from_array(
 )
 
 
-def _spec_newinf_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
-    """HV_NewInfections_V1 (3, …, 81): sex [0]=both, [1]=male, [2]=female.
-    Inner dims (risk group, vaccine state) are always summed; no age disagg available."""
-    arr = np.array(modvars[HV_NewInfectionsTag])
-    n = arr.shape[-1]
-    if disagg_sex:
-        return [
-            ("Male", arr[1].reshape(-1, n).sum(axis=0)),
-            ("Female", arr[2].reshape(-1, n).sum(axis=0)),
-        ]
-    return [("Total", (arr[1] + arr[2]).reshape(-1, n).sum(axis=0))]
-
-
-def _spec_aidsdeath_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
-    """HV_AIDSDeaths_V1: same sex-first structure as HV_NewInfections_V1."""
-    arr = np.array(modvars[HV_AIDSDeathsTag])
-    n = arr.shape[-1]
-    if disagg_sex:
-        return [
-            ("Male", arr[1].reshape(-1, n).sum(axis=0)),
-            ("Female", arr[2].reshape(-1, n).sum(axis=0)),
-        ]
-    return [("Total", (arr[1] + arr[2]).reshape(-1, n).sum(axis=0))]
-
-
 def _spec_newinf_1549_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
     """HV_NewInfections_V1 for the 15-49 indicator: uses '15-49' demo key for color consistency."""
     arr = np.array(modvars[HV_NewInfectionsTag])
@@ -553,14 +528,6 @@ def _spec_aidsdeath_1549_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bo
             ("Female", arr[2].reshape(-1, n).sum(axis=0)),
         ]
     return [("15-49", (arr[1] + arr[2]).reshape(-1, n).sum(axis=0))]
-
-
-def _spec_hivpop_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
-    """HV_TotalAdultsHIV_V1 (3, 81): sex [0]=both, [1]=male, [2]=female. No age disagg."""
-    arr = np.array(modvars[HV_TotalAdultsHIVTag])
-    if disagg_sex:
-        return [("Male", arr[1]), ("Female", arr[2])]
-    return [("Total", arr[1] + arr[2])]
 
 
 def _spec_hivpop_1549_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
@@ -886,6 +853,36 @@ def compute_new_infections_rg_spectrum(modvars: dict, disagg_sex: bool) -> list[
     return result
 
 
+@dataclass
+class RiskGroupIndicatorDef:
+    """One selectable indicator for the risk-group sub-tabs' Indicator dropdown
+    (comparison_module.risk_group_panel_ui/server, multi_risk_group_panel_server).
+    `compute_fns` has the same (data, disagg_sex) -> list[(rg_name, demo, ndarray)]
+    shape as a bare RiskGroupSubTab.compute_fns dict; `title_prefix`/`y_title` are
+    carried alongside since the two indicators here (population share vs. new
+    infections) have different units and the row layout (risk-group names) gives no
+    clue which one is showing."""
+    compute_fns: dict[str, Callable[[dict, bool], list[tuple[str, str, np.ndarray]]]]
+    title_prefix: str
+    y_title: str | None = None
+
+
+RISK_GROUP_INDICATOR_NAMES: list[str] = ["Risk group population share", "New infections"]
+
+RISK_GROUP_INDICATOR_MAP: OrderedDict[str, RiskGroupIndicatorDef] = OrderedDict([
+    ("Risk group population share", RiskGroupIndicatorDef(
+        compute_fns={"goals": compute_rg_goals, "spectrum": compute_rg_spectrum},
+        title_prefix="Risk group population share",
+        y_title="% of population aged 15-49",
+    )),
+    ("New infections", RiskGroupIndicatorDef(
+        compute_fns={"goals": compute_new_infections_rg_goals, "spectrum": compute_new_infections_rg_spectrum},
+        title_prefix="New infections by risk group",
+        y_title="New infections",
+    )),
+])
+
+
 # ---------------------------------------------------------------------------
 # Child (0-14) CD4-faceted indicators ("0-14" sub-tab). Each compute fn has
 # the same (data, disagg_sex) -> list[(facet_label, demo, ndarray)] shape as
@@ -1018,26 +1015,40 @@ class ChildCD4IndicatorDef:
 
 
 CHILD_CD4_INDICATOR_NAMES: list[str] = [
-    "0-4 HIV population", "5-14 HIV population",
-    "0-4 On ART population", "5-14 On ART population",
+    "0-4 HIV population (not on ART)", "5-14 HIV population (not on ART)",
+    "0-4 On ART population (by CD4 at ART initiation)", "5-14 On ART population (by CD4 at ART initiation)",
     "0-4 AIDS deaths (on ART)", "5-14 AIDS deaths (on ART)",
     "0-4 AIDS deaths (not on ART)", "5-14 AIDS deaths (not on ART)",
 ]
 
 CHILD_CD4_INDICATOR_MAP: OrderedDict[str, ChildCD4IndicatorDef] = OrderedDict([
-    ("0-4 HIV population", ChildCD4IndicatorDef(CD4_LABELS_HC1, {
+    # "HIV population" here is specifically the not-on-ART stock: both dp_aim's
+    # hc1_hivpop/hc2_hivpop (see leapfrog's variables.Rmd: "PLHIV ... not on
+    # ART ...") and Spectrum's AM_CD4DistributionChildTag DP_NoTreat branch are
+    # defined that way — neither model has a single combined "PLHIV regardless
+    # of ART status" stock, so the two sides are a correct match, just not an
+    # all-PLHIV total. Labelled accordingly rather than changing what's plotted.
+    ("0-4 HIV population (not on ART)", ChildCD4IndicatorDef(CD4_LABELS_HC1, {
         "dp_aim": _lf_child_cd4_noart("hc1_hivpop", CD4_LABELS_HC1),
         "spectrum_aim": _spec_child_cd4_hc1_noart, "spectrum": _spec_child_cd4_hc1_noart,
     })),
-    ("5-14 HIV population", ChildCD4IndicatorDef(CD4_LABELS_HC2, {
+    ("5-14 HIV population (not on ART)", ChildCD4IndicatorDef(CD4_LABELS_HC2, {
         "dp_aim": _lf_child_cd4_noart("hc2_hivpop", CD4_LABELS_HC2),
         "spectrum_aim": _spec_child_cd4_hc2_noart, "spectrum": _spec_child_cd4_hc2_noart,
     })),
-    ("0-4 On ART population", ChildCD4IndicatorDef(CD4_LABELS_HC1, {
+    # "On ART population" is broken down by the CD4 category a child was in
+    # *at ART initiation* — both dp_aim's hc1_artpop/hc2_artpop (the CD4 index
+    # is fixed at initiation and never reclassified as ART duration advances,
+    # see child_model_simulation.hpp's progress_time_on_art) and Spectrum's
+    # AM_CD4DistributionChildTag DP_OnART branch (same fixed-CD4 + ART-duration
+    # axis structure) track it this way, not by current/recovered CD4. Summed
+    # across CD4 rows the total is still the true current on-ART population;
+    # only the per-row breakdown reflects CD4 at initiation.
+    ("0-4 On ART population (by CD4 at ART initiation)", ChildCD4IndicatorDef(CD4_LABELS_HC1, {
         "dp_aim": _lf_child_cd4_art("hc1_artpop", CD4_LABELS_HC1),
         "spectrum_aim": _spec_child_cd4_hc1_art, "spectrum": _spec_child_cd4_hc1_art,
     })),
-    ("5-14 On ART population", ChildCD4IndicatorDef(CD4_LABELS_HC2, {
+    ("5-14 On ART population (by CD4 at ART initiation)", ChildCD4IndicatorDef(CD4_LABELS_HC2, {
         "dp_aim": _lf_child_cd4_art("hc2_artpop", CD4_LABELS_HC2),
         "spectrum_aim": _spec_child_cd4_hc2_art, "spectrum": _spec_child_cd4_hc2_art,
     })),
@@ -1130,15 +1141,16 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
     ("HIV population", IndicatorDef(
         disagg={
             "dp_aim": _disagg_std("p_hivpop"),
-            "spectrum": _spec_hivpop_disagg,
+            "spectrum": _am_hivpop_disagg,
             "spectrum_aim": _am_hivpop_disagg,
         },
         # "spectrum" (Goals tab) here means the same raw Spectrum `modvars` dict
-        # as "spectrum_aim" (see _goals_run_fn in app.py) — HV_TotalAdultsHIV_V1
-        # itself has no age axis (hence `disagg`'s "spectrum" entry above uses
-        # a no-age HV_* function), but the AM_HIVBySingleAge_V1 modvar backing
-        # "spectrum_aim" is populated for Goals-classified PJNZ runs too, with
-        # values matching dp_aim's p_hivpop closely — so reuse it here.
+        # as "spectrum_aim" (see _goals_run_fn in app.py). HV_TotalAdultsHIV_V1
+        # is restricted to Spectrum's Goals/HV adult cohort (ages 15-49) and so
+        # is NOT a valid stand-in for an all-ages total; AM_HIVBySingleAge_V1 is
+        # populated for Goals-classified PJNZ runs too, with values matching
+        # dp_aim's p_hivpop closely, so it's used for "spectrum" here as well
+        # as for "spectrum_aim" (same as age_profile below).
         age_profile={
             "dp_aim": _disagg_std_single_age("p_hivpop"),
             "spectrum": _am_hivpop_disagg_single,
@@ -1148,7 +1160,11 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
     ("New HIV infections", IndicatorDef(
         disagg={
             "dp_aim": _disagg_std("p_infections"),
-            "spectrum": _spec_newinf_disagg,
+            # "spectrum" uses the same AM_NewInfectionsBySingleAge_V1 modvar as
+            # "spectrum_aim" rather than HV_NewInfections_V1, which is restricted
+            # to Spectrum's Goals/HV adult cohort (ages 15-49) and so excludes
+            # pediatric (MTCT) infections — see "HIV population" above.
+            "spectrum": _am_newinf_disagg,
             "spectrum_aim": _am_newinf_disagg,
         },
         age_profile={
@@ -1160,7 +1176,12 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
     ("AIDS deaths", IndicatorDef(
         disagg={
             "dp_aim": _disagg_std("p_hiv_deaths"),
-            "spectrum": _spec_aidsdeath_disagg,
+            # "spectrum" uses the same AM_AIDSDeathsARTSingleAge_V1 +
+            # AM_AIDSDeathsNoARTSingleAge_V1 combination as "spectrum_aim" rather
+            # than HV_AIDSDeaths_V1, which is restricted to Spectrum's Goals/HV
+            # adult cohort (ages 15-49) and so excludes child AIDS deaths — see
+            # "HIV population" above.
+            "spectrum": _am_aidsdeath_disagg,
             "spectrum_aim": _am_aidsdeath_disagg,
         },
         age_profile={
