@@ -26,7 +26,7 @@ from leapfrog_compare.eppasm_indicator_map import (
 from leapfrog_compare.eppasm_runner import run_eppasm_both
 from leapfrog_compare.indicator_map import (
     AGE_LABELS, AGE_PROFILE_INDICATOR_NAMES, ALL_AGES_INDICATOR_NAMES, CHILD_CD4_INDICATOR_MAP,
-    CHILD_CD4_INDICATOR_NAMES, FIFTEEN_49_INDICATOR_NAMES, INDICATOR_MAP,
+    CHILD_CD4_INDICATOR_NAMES, DEATHS_INDICATOR_NAMES, FIFTEEN_49_INDICATOR_NAMES, INDICATOR_MAP,
     RISK_GROUP_INDICATOR_MAP, RISK_GROUP_INDICATOR_NAMES, RISK_GROUPS,
 )
 from leapfrog_compare.pjnz_classify import is_goals_pjnz
@@ -276,6 +276,12 @@ _AIM_SUBTABS = [
         indicator_map=INDICATOR_MAP, sources=_AIM_SOURCES, age_labels=AGE_LABELS,
         show_age_checkbox=False,
     ),
+    SubTab(
+        id="aim_deaths", label="Deaths",
+        indicator_names=DEATHS_INDICATOR_NAMES, default_indicators=DEATHS_INDICATOR_NAMES[:3],
+        indicator_map=INDICATOR_MAP, sources=_AIM_SOURCES, age_labels=AGE_LABELS,
+        show_age_checkbox=False,
+    ),
 ]
 
 _GOALS_SUBTABS = [
@@ -287,6 +293,12 @@ _GOALS_SUBTABS = [
     SubTab(
         id="goals_1549", label="15-49",
         indicator_names=FIFTEEN_49_INDICATOR_NAMES, default_indicators=FIFTEEN_49_INDICATOR_NAMES,
+        indicator_map=INDICATOR_MAP, sources=_GOALS_SOURCES, age_labels=AGE_LABELS,
+        show_age_checkbox=False,
+    ),
+    SubTab(
+        id="goals_deaths", label="Deaths",
+        indicator_names=DEATHS_INDICATOR_NAMES, default_indicators=DEATHS_INDICATOR_NAMES[:3],
         indicator_map=INDICATOR_MAP, sources=_GOALS_SOURCES, age_labels=AGE_LABELS,
         show_age_checkbox=False,
     ),
@@ -339,6 +351,11 @@ _MULTI_SUBTABS = [
         id="multi_1549", label="15-49",
         indicator_names=FIFTEEN_49_INDICATOR_NAMES,
         default_indicators=FIFTEEN_49_INDICATOR_NAMES,
+    ),
+    MultiSubTab(
+        id="multi_deaths", label="Deaths",
+        indicator_names=DEATHS_INDICATOR_NAMES,
+        default_indicators=DEATHS_INDICATOR_NAMES[:3],
     ),
 ]
 

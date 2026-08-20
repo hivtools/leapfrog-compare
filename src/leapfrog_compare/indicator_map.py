@@ -53,6 +53,7 @@ from SpectrumCommon.Const.AM.AMTags import (  # type: ignore[import-untyped]
     AM_HIVBySingleAgeTag,
     AM_NewInfectionsBySingleAgeTag,
     AM_ChildNeedPMTCTTag,
+    AM_NonAIDSExcessDeathsSingleAgeTag,
     AM_OnARTBySingleAgeTag,
 )
 from SpectrumCommon.Const.DP.DPConst import (  # type: ignore[import-untyped]
@@ -69,6 +70,7 @@ from SpectrumCommon.Const.DP.DPConst import (  # type: ignore[import-untyped]
 from SpectrumCommon.Const.DP.DPTags import (  # type: ignore[import-untyped]
     DP_BigPopTag,
     DP_BirthsTag,
+    DP_DeathsByAgeTag,
     DP_DeathsTag,
 )
 from SpectrumCommon.Const.GB.GBConst import (  # type: ignore[import-untyped]
@@ -486,6 +488,118 @@ def _spec_deaths_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> l
     if disagg_sex:
         return [("Male", male), ("Female", female)]
     return [("Total", male + female)]
+
+
+# ---------------------------------------------------------------------------
+# "Deaths" sub-tab: drill-down into the components of "Total deaths", each
+# aggregated fully over age (year on the x-axis), with an optional sex split.
+# Every dp_aim array here ends in (..., NS=2, T) — p_deaths_* end in (age, NS,
+# T), h_hiv_deaths_*/h_deaths_excess_* end in (..., hAG, NS, T), hc1/hc2_*
+# end in (..., hc{1,2}AG, NS, T) — so summing every axis but the last two
+# always collapses to a (NS, T) total, regardless of which array it is.
+# ---------------------------------------------------------------------------
+
+def _lf_deaths_disagg(*keys: str) -> Callable:
+    """Sum one or more dp_aim/goals output arrays (each ending in (..., NS=2, T))
+    fully over every axis except sex and year, then add them together. Used for
+    every "Deaths" sub-tab indicator's dp_aim/goals side — most map to a single
+    output key, but e.g. "AIDS deaths (on ART)" is the sum of the adult
+    (h_hiv_deaths_art) and child (hc1_art_aids_deaths, hc2_art_aids_deaths)
+    arrays, matching how LeapfrogDataMapping.py assembles Spectrum's single-age
+    AM_AIDSDeathsARTSingleAge_V1 from the same three leapfrog outputs. Never
+    branches on disagg_age (same idiom as _lf_total_deaths_disagg) — the
+    "Deaths" sub-tab offers no age facet."""
+    def fn(output: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+        total = None
+        for key in keys:
+            arr = output[key]
+            summed = arr.sum(axis=tuple(range(arr.ndim - 2)))  # -> (NS=2, T)
+            total = summed if total is None else total + summed
+        if disagg_sex:
+            return [("Male", total[0]), ("Female", total[1])]
+        return [("Total", total[0] + total[1])]
+    return fn
+
+
+# AM_AIDSDeathsARTSingleAgeTag/AM_AIDSDeathsNoARTSingleAgeTag: see _am_aidsdeath_disagg
+# above — same (sex=3, single_age=81, T) shape as DP_BigPop_V1, split by ART status
+# rather than summed together.
+_spec_aidsdeath_art_disagg = _am_disagg(AM_AIDSDeathsARTSingleAgeTag)
+_spec_aidsdeath_noart_disagg = _am_disagg(AM_AIDSDeathsNoARTSingleAgeTag)
+
+# DP_DeathsByAgeTag: background (non-HIV) deaths, single year of age — same
+# (sex=3, single_age=81, T) shape as DP_BigPop_V1, unlike the 5-year-banded
+# DP_DeathsTag used by "Total deaths"/_spec_deaths_disagg above.
+_spec_bg_deaths_totpop_disagg = _am_disagg(DP_DeathsByAgeTag)
+
+# AM_NonAIDSExcessDeathsSingleAgeTag (ART_status=3, sex=3, single_age=81, T):
+# index 0 is a precomputed "NoTreat + OnART" sum, but per this module's usual
+# convention (see the file docstring) precomputed totals aren't trusted — the
+# "total" variant below sums DP_NoTreat + DP_OnART manually instead of reading
+# index 0.
+_spec_excess_nonaids_art_disagg = _am_disagg_from_array(
+    lambda modvars: np.array(modvars[AM_NonAIDSExcessDeathsSingleAgeTag])[DP_OnART]
+)
+_spec_excess_nonaids_noart_disagg = _am_disagg_from_array(
+    lambda modvars: np.array(modvars[AM_NonAIDSExcessDeathsSingleAgeTag])[DP_NoTreat]
+)
+_spec_excess_nonaids_total_disagg = _am_disagg_from_array(
+    lambda modvars: (
+        np.array(modvars[AM_NonAIDSExcessDeathsSingleAgeTag])[DP_NoTreat]
+        + np.array(modvars[AM_NonAIDSExcessDeathsSingleAgeTag])[DP_OnART]
+    )
+)
+
+# Non-AIDS deaths in the HIV+ population, by ART status — background and
+# excess deaths bundled together, since Spectrum has no isolated single-cause
+# modvar to compare against leapfrog's separate p_deaths_nonaids_artpop/hivpop
+# (background only). The dp_aim side sums the matching leapfrog background +
+# excess pair so both lines represent the same combined total (see
+# _lf_deaths_disagg calls below).
+#
+# Rather than reading the precomputed AM_ResNonAIDSDeathsHIVPopART_V1/NoART_V1
+# report modvars directly (Spectrum only populates those once a report screen
+# actually requests them — they read back as all-zero on a plain PJNZ import),
+# this is a direct port of Spec5's DP/MAIN/DPUTIL.PAS
+# Get_NonAIDSDeathsHIVPopART/NoART, which derive the same figure from four
+# modvars that *are* always populated: DP_BigPop_V1, AM_OnARTBySingleAge_V1,
+# AM_HIVBySingleAge_V1, DP_DeathsByAge_V1, and AM_NonAIDSExcessDeathsSingleAge_V2.
+# DP_DeathsByAge_V1 ("deaths_all") is *every* non-AIDS death — background and
+# excess combined, HIV+ and HIV- people alike; subtracting the two excess
+# terms isolates the background-only share, which Get_NonAIDSDeathsHIVPopART
+# reallocates by ART population share (Get_NonAIDSDeathsHIVPopNoART is the
+# mirror image for the not-on-ART share of the HIV+ population):
+#   ART:    deaths_art + (deaths_all - deaths_off - deaths_art) * pop_art / pop_all
+#   NoART:  deaths_off + (deaths_all - deaths_off - deaths_art) * (pop_hiv - pop_art) / pop_all
+def _spec_nonaids_hivpop_disagg(art: bool) -> Callable:
+    def fn(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
+        pop_all = np.array(modvars[DP_BigPopTag])              # (sex=3, age=81, T)
+        pop_art = np.array(modvars[AM_OnARTBySingleAgeTag])     # (sex=3, age=81, T)
+        pop_hiv = np.array(modvars[AM_HIVBySingleAgeTag])       # (sex=3, age=81, T)
+        deaths_all = np.array(modvars[DP_DeathsByAgeTag])       # (sex=3, age=81, T)
+        excess = np.array(modvars[AM_NonAIDSExcessDeathsSingleAgeTag])  # (ART_status=3, sex=3, age=81, T)
+        deaths_off = excess[DP_NoTreat]
+        deaths_art = excess[DP_OnART]
+
+        bg_share = deaths_all - deaths_off - deaths_art
+        safe_pop_all = np.where(pop_all > 0, pop_all, 1.0)
+        if art:
+            per_age = deaths_art + np.where(pop_all > 0, bg_share * pop_art / safe_pop_all, 0.0)
+        else:
+            per_age = deaths_off + np.where(pop_all > 0, bg_share * (pop_hiv - pop_art) / safe_pop_all, 0.0)
+
+        if disagg_sex:
+            return [
+                ("Male", per_age[GB_Male].sum(axis=0)),
+                ("Female", per_age[GB_Female].sum(axis=0)),
+            ]
+        return [("Total", (per_age[GB_Male] + per_age[GB_Female]).sum(axis=0))]
+    return fn
+
+
+_spec_nonaids_hivpop_art_disagg = _spec_nonaids_hivpop_disagg(art=True)
+_spec_nonaids_hivpop_noart_disagg = _spec_nonaids_hivpop_disagg(art=False)
+
 
 # ---------------------------------------------------------------------------
 # Single-year-of-age variants for the "By age" sub-tab (see IndicatorDef.age_profile
@@ -1210,6 +1324,59 @@ INDICATOR_MAP: OrderedDict[str, IndicatorDef] = OrderedDict([
         "spectrum": _spec_deaths_disagg,
         "spectrum_aim": _spec_deaths_disagg,
     })),
+
+    # --- "Deaths" sub-tab: drill-down into "Total deaths"'s components, all
+    # aggregated over age (year on the x-axis). No "goals" key on any of these
+    # — same reasoning as "Total deaths" above. "AIDS deaths (on ART)" +
+    # "AIDS deaths (not on ART)" sum to the existing "AIDS deaths" indicator;
+    # "Excess non-AIDS deaths (on ART)" + "(not on ART)" sum to "Excess
+    # non-AIDS deaths (total)"; together with "Background deaths (total
+    # population)", all five sum back to "Total deaths". "Non-AIDS deaths in
+    # HIV+ population (on/not on ART)" is a separate drill-down (of all
+    # background deaths, how many fall among PLHIV) that Spectrum only
+    # reports as a combined background+excess total — see
+    # _spec_nonaids_hivpop_art_disagg's docstring above.
+    ("Background deaths (total population)", IndicatorDef(disagg={
+        "dp_aim": _lf_deaths_disagg("p_deaths_background_totpop"),
+        "spectrum": _spec_bg_deaths_totpop_disagg,
+        "spectrum_aim": _spec_bg_deaths_totpop_disagg,
+    })),
+    ("AIDS deaths (on ART)", IndicatorDef(disagg={
+        "dp_aim": _lf_deaths_disagg("h_hiv_deaths_art", "hc1_art_aids_deaths", "hc2_art_aids_deaths"),
+        "spectrum": _spec_aidsdeath_art_disagg,
+        "spectrum_aim": _spec_aidsdeath_art_disagg,
+    })),
+    ("AIDS deaths (not on ART)", IndicatorDef(disagg={
+        "dp_aim": _lf_deaths_disagg("h_hiv_deaths_no_art", "hc1_noart_aids_deaths", "hc2_noart_aids_deaths"),
+        "spectrum": _spec_aidsdeath_noart_disagg,
+        "spectrum_aim": _spec_aidsdeath_noart_disagg,
+    })),
+    ("Excess non-AIDS deaths (total)", IndicatorDef(disagg={
+        "dp_aim": _lf_deaths_disagg("p_deaths_excess_nonaids"),
+        "spectrum": _spec_excess_nonaids_total_disagg,
+        "spectrum_aim": _spec_excess_nonaids_total_disagg,
+    })),
+    ("Excess non-AIDS deaths (on ART)", IndicatorDef(disagg={
+        "dp_aim": _lf_deaths_disagg("p_excess_deaths_nonaids_on_art"),
+        "spectrum": _spec_excess_nonaids_art_disagg,
+        "spectrum_aim": _spec_excess_nonaids_art_disagg,
+    })),
+    ("Excess non-AIDS deaths (not on ART)", IndicatorDef(disagg={
+        "dp_aim": _lf_deaths_disagg("p_excess_deaths_nonaids_no_art"),
+        "spectrum": _spec_excess_nonaids_noart_disagg,
+        "spectrum_aim": _spec_excess_nonaids_noart_disagg,
+    })),
+    ("Non-AIDS deaths in HIV+ population (on ART)", IndicatorDef(disagg={
+        "dp_aim": _lf_deaths_disagg("p_deaths_nonaids_artpop", "p_excess_deaths_nonaids_on_art"),
+        "spectrum": _spec_nonaids_hivpop_art_disagg,
+        "spectrum_aim": _spec_nonaids_hivpop_art_disagg,
+    })),
+    ("Non-AIDS deaths in HIV+ population (not on ART)", IndicatorDef(disagg={
+        "dp_aim": _lf_deaths_disagg("p_deaths_nonaids_hivpop", "p_excess_deaths_nonaids_no_art"),
+        "spectrum": _spec_nonaids_hivpop_noart_disagg,
+        "spectrum_aim": _spec_nonaids_hivpop_noart_disagg,
+    })),
+
     ("Prevalence in pregnant women (%)", IndicatorDef(disagg={
         "dp_aim": _lf_pregnant_prevalence_disagg,
         "spectrum": _spec_pregnant_prevalence_disagg,
@@ -1279,6 +1446,16 @@ FIFTEEN_49_INDICATOR_NAMES: list[str] = [
     "Total population (15-49)", "Total PLHIV (15-49)", "New HIV infections (15-49)",
     "AIDS deaths (15-49)", "Total deaths (15-49)", "Prevalence (15-49) (%)",
     "Incidence (15-49) (%)", "Total on ART (15-49)",
+]
+# "Deaths" sub-tab: drill-down into the components of "Total deaths"/"AIDS
+# deaths" above, each aggregated over age with year on the x-axis.
+DEATHS_INDICATOR_NAMES: list[str] = [
+    "Total deaths", "Background deaths (total population)",
+    "AIDS deaths", "AIDS deaths (on ART)", "AIDS deaths (not on ART)",
+    "Excess non-AIDS deaths (total)", "Excess non-AIDS deaths (on ART)",
+    "Excess non-AIDS deaths (not on ART)",
+    "Non-AIDS deaths in HIV+ population (on ART)",
+    "Non-AIDS deaths in HIV+ population (not on ART)",
 ]
 # Indicators with a real single-year-of-age breakdown available (i.e. a
 # non-empty `age_profile` dict) — populates the "By age" sub-tab's indicator
