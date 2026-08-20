@@ -200,6 +200,19 @@ def _disagg_std(
     return fn
 
 
+def _child_art_by_single_age(output: dict) -> np.ndarray:
+    """hc1_artpop (hTS, CD4, AGE=5, NS=2, T; ages 0-4) and hc2_artpop (hTS, CD4,
+    AGE=10, NS=2, T; ages 5-14) summed over their CD4/ART-duration axes and
+    stitched together into a single (age=15, NS=2, T) array covering ages 0-14 —
+    the child-side complement to h_artpop's adult (15+) coverage, for _disagg_art
+    to draw on instead of reporting zeros under age 15."""
+    hc1 = output["hc1_artpop"]
+    hc2 = output["hc2_artpop"]
+    hc1_sum = hc1.sum(axis=tuple(range(hc1.ndim - 3)))  # -> (age=5, NS=2, T)
+    hc2_sum = hc2.sum(axis=tuple(range(hc2.ndim - 3)))  # -> (age=10, NS=2, T)
+    return np.concatenate([hc1_sum, hc2_sum], axis=0)  # -> (age=15, NS=2, T)
+
+
 def _disagg_art(
     *,
     age_groups: list[tuple[int, int]] = AGE_GROUPS,
@@ -208,40 +221,60 @@ def _disagg_art(
     """
     Disaggregation for h_artpop (4, 7, 66, 2, n_years): adult ages 15-80, sex axis=3.
     Age axis index 0 = age 15, index i = age 15+i.
-    Under-15 age groups return zeros (no adult ART data below age 15).
+    Under-15 age groups are drawn from hc1_artpop/hc2_artpop instead (see
+    _child_art_by_single_age) — h_artpop alone has no data below age 15, and every
+    AGE_GROUPS/AGE_GROUPS_SINGLE band either falls entirely below 15 or entirely
+    at/above it (the 5-year buckets split exactly on the 15 boundary), so no band
+    ever needs to mix the two sources.
     `age_groups`/`age_labels` default to the 5-year display buckets; pass
     AGE_GROUPS_SINGLE/AGE_LABELS_SINGLE for single-year-of-age resolution.
     """
     def fn(output: dict, disagg_age: bool, disagg_sex: bool) -> list[tuple[str, np.ndarray]]:
         arr = output["h_artpop"]  # (4, 7, 66, 2, n_years)
+        child_arr = _child_art_by_single_age(output)  # (age=15, NS=2, n_years)
         n_years = arr.shape[-1]
         series: list[tuple[str, np.ndarray]] = []
 
         if disagg_age:
-            age_items: list[tuple[str, slice | None]] = []
+            age_items: list[tuple[str, str, slice]] = []
             for (a, b), lbl in zip(age_groups, age_labels):
                 if b < 15:
-                    age_items.append((lbl, None))  # under-15: no data in h_artpop
+                    age_items.append((lbl, "child", slice(a, b + 1)))
                 else:
                     art_start = max(0, a - 15)
                     art_end = min(65, b - 15) + 1
-                    age_items.append((lbl, slice(art_start, art_end)))
+                    age_items.append((lbl, "adult", slice(art_start, art_end)))
         else:
-            age_items = [(None, slice(None))]
+            age_items = [(None, "total", slice(None))]
 
         sex_items: list[tuple[str | None, int | None]] = (
             [(sl, i) for i, sl in enumerate(SEX_LABELS)]
             if disagg_sex else [(None, None)]
         )
 
-        for age_lbl, age_sl in age_items:
+        for age_lbl, source, age_sl in age_items:
             for sex_lbl, sex_idx in sex_items:
-                if age_sl is None:
-                    data = np.zeros(n_years)
-                elif sex_idx is not None:
-                    data = arr[:, :, age_sl, sex_idx, :].reshape(-1, n_years).sum(axis=0)
-                else:
-                    data = arr[:, :, age_sl, :, :].reshape(-1, n_years).sum(axis=0)
+                if source == "child":
+                    data = (
+                        child_arr[age_sl, sex_idx, :] if sex_idx is not None
+                        else child_arr[age_sl, :, :].sum(axis=(0, 1))
+                    )
+                elif source == "adult":
+                    data = (
+                        arr[:, :, age_sl, sex_idx, :].reshape(-1, n_years).sum(axis=0) if sex_idx is not None
+                        else arr[:, :, age_sl, :, :].reshape(-1, n_years).sum(axis=0)
+                    )
+                else:  # "total": adult (15+) + child (0-14)
+                    if sex_idx is not None:
+                        data = (
+                            arr[:, :, :, sex_idx, :].reshape(-1, n_years).sum(axis=0)
+                            + child_arr[:, sex_idx, :].sum(axis=0)
+                        )
+                    else:
+                        data = (
+                            arr.reshape(-1, n_years).sum(axis=0)
+                            + child_arr.sum(axis=(0, 1))
+                        )
                 parts = [p for p in [age_lbl, sex_lbl] if p]
                 label = " / ".join(parts) if parts else "Total"
                 series.append((label, data))
@@ -481,10 +514,27 @@ def _spec_deaths_disagg(modvars: dict, _disagg_age: bool, disagg_sex: bool) -> l
     pre-aggregated total), DP_Deaths_V1's GB_BothSexes row isn't reliable, so the
     total is always Male + Female summed manually, matching this module's usual
     convention for every other non-Births modvar. No age disaggregation offered
-    (deaths are only available in 5-year age bands here)."""
+    (deaths are only available in 5-year age bands here).
+
+    DP_Deaths_V1 alone is *non-AIDS* deaths only — it excludes AIDS mortality,
+    which Spectrum reports separately via AM_AIDSDeathsARTSingleAge_V1 /
+    AM_AIDSDeathsNoARTSingleAge_V1 (confirmed empirically: leapfrog's dp_aim total
+    deaths, background + HIV + excess non-AIDS, minus DP_Deaths_V1 reproduces
+    Spectrum's own AIDS death count to within rounding, across the full
+    projection). Both AIDS-death tags share DP_BigPop_V1's (sex=3, single_age=81,
+    T) shape, so they're summed over age and added in here to make this an
+    apples-to-apples total against the dp_aim side's _lf_total_deaths_disagg."""
     arr = np.array(modvars[DP_DeathsTag])
     male = arr[GB_Male, DP_AllAges, :]
     female = arr[GB_Female, DP_AllAges, :]
+
+    aids_art = np.array(modvars[AM_AIDSDeathsARTSingleAgeTag])
+    aids_noart = np.array(modvars[AM_AIDSDeathsNoARTSingleAgeTag])
+    aids_male = (aids_art[1] + aids_noart[1]).sum(axis=0)
+    aids_female = (aids_art[2] + aids_noart[2]).sum(axis=0)
+
+    male = male + aids_male
+    female = female + aids_female
     if disagg_sex:
         return [("Male", male), ("Female", female)]
     return [("Total", male + female)]
@@ -714,17 +764,26 @@ def _spec_deaths_1549_disagg(modvars: dict, disagg_age: bool, disagg_sex: bool) 
     slot at index 0). Unlike the all-ages version, GB_BothSexes can't be used
     directly here — that pre-aggregated total is only valid for the full
     DP_AllAges slice — so Male+Female bands are summed manually, matching
-    _am_disagg_1549's convention."""
+    _am_disagg_1549's convention.
+
+    Like _spec_deaths_disagg, DP_Deaths_V1 is non-AIDS deaths only, so
+    AM_AIDSDeathsARTSingleAge_V1/NoARTSingleAge_V1 (single-year-of-age, ages
+    15-49 = indices 15:50) are added in to match the dp_aim side's
+    _lf_total_deaths_1549_disagg, which includes HIV deaths."""
     if disagg_age:
         return []
     arr = np.array(modvars[DP_DeathsTag])
+
+    aids_art = np.array(modvars[AM_AIDSDeathsARTSingleAgeTag])
+    aids_noart = np.array(modvars[AM_AIDSDeathsNoARTSingleAgeTag])
+    aids_male = (aids_art[1] + aids_noart[1])[15:50, :].sum(axis=0)
+    aids_female = (aids_art[2] + aids_noart[2])[15:50, :].sum(axis=0)
+
+    male = arr[GB_Male, 4:11, :].sum(axis=0) + aids_male
+    female = arr[GB_Female, 4:11, :].sum(axis=0) + aids_female
     if disagg_sex:
-        return [
-            ("Male", arr[GB_Male, 4:11, :].sum(axis=0)),
-            ("Female", arr[GB_Female, 4:11, :].sum(axis=0)),
-        ]
-    total = arr[GB_Male, 4:11, :].sum(axis=0) + arr[GB_Female, 4:11, :].sum(axis=0)
-    return [("15-49", total)]
+        return [("Male", male), ("Female", female)]
+    return [("15-49", male + female)]
 
 
 def _no_age_disagg(disagg_fn: Callable) -> Callable:

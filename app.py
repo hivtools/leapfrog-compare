@@ -13,11 +13,11 @@ from shiny import App, reactive, ui
 
 import leapfrog_compare.config as config
 from leapfrog_compare.comparison_module import (
-    age_profile_panel_server, age_profile_panel_ui, data_panel_server, data_panel_ui,
-    facet_panel_server, facet_panel_ui, multi_facet_panel_server, multi_facet_panel_ui,
-    multi_pjnz_panel_server, multi_pjnz_panel_ui, multi_plot_panel_server, multi_plot_panel_ui,
-    multi_risk_group_panel_server, multi_risk_group_panel_ui, plot_panel_server, plot_panel_ui,
-    risk_group_panel_server, risk_group_panel_ui,
+    age_profile_panel_server, age_profile_panel_ui, averted_panel_server, averted_panel_ui,
+    data_panel_server, data_panel_ui, facet_panel_server, facet_panel_ui, multi_facet_panel_server,
+    multi_facet_panel_ui, multi_pjnz_panel_server, multi_pjnz_panel_ui, multi_plot_panel_server,
+    multi_plot_panel_ui, multi_risk_group_panel_server, multi_risk_group_panel_ui,
+    plot_panel_server, plot_panel_ui, risk_group_panel_server, risk_group_panel_ui,
 )
 from leapfrog_compare.eppasm_indicator_map import (
     EPPASM_ALL_AGES_INDICATOR_NAMES, EPPASM_FIFTEEN_49_INDICATOR_NAMES,
@@ -249,6 +249,30 @@ class MultiFacetSubTab:
     title_prefix: str
 
 
+@dataclass
+class AvertedSubTab:
+    """A Multi PJNZ sub-tab with a baseline-PJNZ selector + indicator dropdown
+    (embedded in the panel body) driving a grouped bar chart of (baseline
+    total - PJNZ total), aggregated over age/sex/year — see
+    comparison_module.averted_panel_ui/server and plotting.render_averted_barchart.
+    Reads from the shared multi_pjnz_panel_server's data_by_pjnz/year_range/model,
+    same as MultiSubTab: only the files checked in the sidebar's "PJNZ files"
+    multiselect are run and available as baseline/comparison, and the source
+    keys (dp_aim/spectrum vs dp_aim/spectrum_aim) follow the sidebar's Model switch."""
+    id: str
+    label: str
+    indicator_choices: dict[str, str]
+
+
+# Display label -> INDICATOR_MAP key. "New HIV infections"/"AIDS deaths" are the
+# all-ages indicators with plain dp_aim + spectrum disagg entries and no "goals"
+# key (see indicator_map.py) — exactly the two-source blue-leapfrog/orange-spectrum
+# shape the averted bar chart wants.
+_AVERTED_INDICATOR_CHOICES = {
+    "Infections averted": "New HIV infections",
+    "Deaths averted": "AIDS deaths",
+}
+
 _GOALS_RISKGROUP_SOURCES = [
     ComparisonSource(key="goals", label="Leapfrog Goals", dash=None, default_visible=True),
     # HV_AdultsTag/HV_NewInfectionsTag (read by compute_rg_spectrum/
@@ -371,6 +395,13 @@ _MULTI_CHILD_SUBTABS = [
         id="multi_child_cd4", label="0-14",
         indicator_names=CHILD_CD4_INDICATOR_NAMES, facet_map=CHILD_CD4_INDICATOR_MAP,
         title_prefix="Child",
+    ),
+]
+
+_MULTI_AVERTED_SUBTABS = [
+    AvertedSubTab(
+        id="multi_averted", label="Averted",
+        indicator_choices=_AVERTED_INDICATOR_CHOICES,
     ),
 ]
 
@@ -531,6 +562,7 @@ def _build_multi_tab_ui(
     *,
     risk_group_subtabs: list[MultiRiskGroupSubTab] = (),
     facet_subtabs: list[MultiFacetSubTab] = (),
+    averted_subtabs: list[AvertedSubTab] = (),
 ):
     return ui.nav_panel(
         title,
@@ -570,6 +602,12 @@ def _build_multi_tab_ui(
                     ),
                 )
                 for ft in facet_subtabs
+            ], *[
+                ui.nav_panel(
+                    at.label,
+                    averted_panel_ui(at.id, indicator_choices=at.indicator_choices),
+                )
+                for at in averted_subtabs
             ]),
             fillable=True,
         ),
@@ -582,6 +620,7 @@ def _wire_multi_tab_server(
     *,
     risk_group_subtabs: list[MultiRiskGroupSubTab] = (),
     facet_subtabs: list[MultiFacetSubTab] = (),
+    averted_subtabs: list[AvertedSubTab] = (),
 ):
     data_by_pjnz, year_range, model = multi_pjnz_panel_server(
         top_id,
@@ -617,6 +656,15 @@ def _wire_multi_tab_server(
             sources=lambda: _GOALS_CHILD_CD4_SOURCES if model() == "Goals" else _AIM_SOURCES,
             title_prefix=ft.title_prefix,
         )
+    for at in averted_subtabs:
+        averted_panel_server(
+            at.id,
+            data_by_pjnz=data_by_pjnz,
+            year_range=year_range,
+            indicator_map=INDICATOR_MAP,
+            indicator_choices=at.indicator_choices,
+            sources=lambda: _GOALS_SOURCES if model() == "Goals" else _AIM_SOURCES,
+        )
 
 
 app_ui = ui.page_navbar(
@@ -636,6 +684,7 @@ app_ui = ui.page_navbar(
     _build_multi_tab_ui(
         "multi", "Multi PJNZ", _MULTI_SUBTABS,
         risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS, facet_subtabs=_MULTI_CHILD_SUBTABS,
+        averted_subtabs=_MULTI_AVERTED_SUBTABS,
     ),
     id="main_nav",
     title="Leapfrog Comparison",
@@ -667,6 +716,7 @@ def server(input, output, session):
     _wire_multi_tab_server(
         "multi", _MULTI_SUBTABS,
         risk_group_subtabs=_MULTI_RISKGROUP_SUBTABS, facet_subtabs=_MULTI_CHILD_SUBTABS,
+        averted_subtabs=_MULTI_AVERTED_SUBTABS,
     )
 
 

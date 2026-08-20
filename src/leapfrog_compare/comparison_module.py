@@ -24,8 +24,8 @@ from shiny import module, reactive, render, ui
 
 from leapfrog_compare.indicator_map import cd4_facet_desc
 from leapfrog_compare.plotting import (
-    ComparisonSource, default_visible_keys, render_age_profile, render_comparison,
-    render_multi_pjnz_comparison, render_multi_risk_group_comparison,
+    ComparisonSource, default_visible_keys, render_age_profile, render_averted_barchart,
+    render_comparison, render_multi_pjnz_comparison, render_multi_risk_group_comparison,
     render_risk_group_comparison, visible_sources,
 )
 
@@ -844,6 +844,122 @@ def multi_risk_group_panel_server(
             year_end=year_end,
             title=f"{ind_def.title_prefix} — Multi PJNZ comparison",
             y_title=ind_def.y_title,
+        )
+        html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+        return ui.div(*error_banner, ui.HTML(html))
+
+
+# ---------------------------------------------------------------------------
+# Averted panel: baseline-PJNZ selector + indicator dropdown, embedded in the
+# panel body, driving a grouped bar chart of (baseline total - this PJNZ's
+# total) per selected PJNZ file, aggregated over age/sex/year — see
+# plotting.render_averted_barchart. Same `data_by_pjnz`/`year_range`/`sources`
+# dependency pattern as `multi_plot_panel_server`/`multi_facet_panel_server`:
+# reads from the shared multi_pjnz_panel_server, so only the files currently
+# checked in the sidebar's "PJNZ files" multiselect are run and available as
+# baseline/comparison, and `sources` tracks the sidebar's Goals/DP-AIM Model
+# switch the same way every other Multi PJNZ sub-tab does.
+# ---------------------------------------------------------------------------
+
+@module.ui
+def averted_panel_ui(*, indicator_choices: dict[str, str]):
+    return ui.div(
+        ui.div(
+            ui.input_selectize("baseline", label="Baseline PJNZ", choices=[]),
+            ui.input_selectize(
+                "indicator",
+                label="Indicator",
+                choices=indicator_choices,
+                selected=next(iter(indicator_choices), None),
+            ),
+            style="display: flex; gap: 20px; max-width: 640px;",
+        ),
+        ui.div(
+            ui.output_ui("comparison_plot"),
+            style="overflow-x: auto; overflow-y: auto;",
+        ),
+        style="padding-top: 12px;",
+    )
+
+
+@module.server
+def averted_panel_server(
+    input,
+    output,
+    session,
+    *,
+    data_by_pjnz: Callable[[], tuple[dict[str, tuple], dict[str, str]]],
+    year_range: Callable[[], tuple[int, int]],
+    indicator_map: dict[str, Any],
+    # Display label (e.g. "Infections averted") -> indicator_map key (e.g.
+    # "New HIV infections").
+    indicator_choices: dict[str, str],
+    sources: Callable[[], list[ComparisonSource]],
+    no_pjnz_message: str = "Select at least one PJNZ file.",
+):
+    @reactive.effect
+    def _refresh_baseline_choices():
+        """Re-fires whenever the sidebar's file selection (or Model switch,
+        which swaps the whole file pool) changes `data_by_pjnz()`'s keys —
+        same trigger pattern as `_refresh_pjnz_choices` elsewhere in this
+        module. Preserves the current baseline if it's still selected."""
+        data, _errors = data_by_pjnz()
+        stems = list(data.keys())
+        with reactive.isolate():
+            current = input.baseline()
+        selected = current if current in stems else (stems[0] if stems else None)
+        ui.update_selectize("baseline", choices=stems, selected=selected)
+
+    @output
+    @render.ui
+    def comparison_plot():
+        data, errors = data_by_pjnz()
+
+        error_banner = [
+            ui.div(
+                ui.p(
+                    f"Error running model for '{stem}':",
+                    style="font-weight:bold; color:#c0392b; margin-bottom:4px;",
+                ),
+                ui.pre(msg, style="white-space:pre-wrap; color:#c0392b; font-size:0.85em;"),
+            )
+            for stem, msg in errors.items()
+        ]
+
+        if not data:
+            if error_banner:
+                return ui.div(*error_banner)
+            return ui.p(no_pjnz_message)
+
+        baseline_stem = input.baseline()
+        if not baseline_stem or baseline_stem not in data:
+            return ui.div(*error_banner, ui.p("Select a baseline PJNZ."))
+
+        indicator_label = input.indicator()
+        indicator_name = indicator_choices.get(indicator_label)
+        if indicator_name is None:
+            return ui.div(*error_banner, ui.p("Select an indicator."))
+
+        if len(data) < 2:
+            return ui.div(*error_banner, ui.p("Select at least one more PJNZ file besides the baseline."))
+
+        year_start, year_end = year_range()
+        stems = list(data.keys())
+        data_by_source_map = {stem: result[0] for stem, result in data.items()}
+        output_years_by_pjnz = {stem: result[1] for stem, result in data.items()}
+
+        fig = render_averted_barchart(
+            indicator_map=indicator_map,
+            data_by_pjnz=data_by_source_map,
+            output_years_by_pjnz=output_years_by_pjnz,
+            sources=sources(),
+            indicator=indicator_name,
+            baseline_stem=baseline_stem,
+            pjnz_stems=stems,
+            year_start=year_start,
+            year_end=year_end,
+            title=f"{indicator_label} — baseline: {baseline_stem}",
+            y_title=indicator_label,
         )
         html = fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
         return ui.div(*error_banner, ui.HTML(html))

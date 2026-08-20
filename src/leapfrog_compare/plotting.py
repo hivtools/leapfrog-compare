@@ -496,6 +496,136 @@ def render_multi_risk_group_comparison(
     return fig
 
 
+def _source_total(
+    source: ComparisonSource,
+    ind_def: Any,
+    data_by_source: dict[str, Any],
+    output_years: range,
+    year_start: int,
+    year_end: int,
+) -> float | None:
+    """Sum one source's totals-only series (age/sex already collapsed by calling
+    `disagg` with both flags off) over the selected year range. Returns None if
+    this source has no data for the indicator at all (missing disagg key or
+    missing data), so callers can skip it — same missing-key convention as
+    `render_comparison`."""
+    fn = ind_def.disagg.get(source.key)
+    data = data_by_source.get(source.key)
+    if fn is None or data is None:
+        return None
+    try:
+        series = fn(data, False, False)
+    except Exception as exc:
+        print(f"[plotting] averted {source.key} disagg failed: {exc}")
+        return None
+
+    years_arr = np.array(list(output_years))
+    mask = (years_arr >= year_start) & (years_arr <= year_end)
+    first_year = int(min(output_years))
+
+    total = 0.0
+    found_any = False
+    for _demo, values in series:
+        if source.needs_offset_align:
+            _x, y = series_utils.align_offset(values, years_arr, first_year, mask)
+        else:
+            y = values[mask].tolist()
+        if y:
+            total += float(sum(y))
+            found_any = True
+    return total if found_any else None
+
+
+def render_averted_barchart(
+    *,
+    indicator_map: dict[str, Any],
+    data_by_pjnz: dict[str, dict[str, Any]],
+    output_years_by_pjnz: dict[str, range],
+    sources: list[ComparisonSource],
+    indicator: str,
+    baseline_stem: str,
+    pjnz_stems: list[str],
+    year_start: int,
+    year_end: int,
+    title: str,
+    y_title: str | None = None,
+) -> go.Figure:
+    """Grouped bar chart of infections/deaths averted relative to a baseline PJNZ:
+    for every other Goals PJNZ file and every source, `baseline total - that
+    file's total`, both totals summed over the selected year range with age and
+    sex already collapsed (`disagg(data, False, False)` — same "Total" series
+    every other totals-only view reads). A positive bar means that file had
+    fewer infections/deaths than the baseline over the selected years.
+
+    Colour is assigned by `sources` order via the shared `_PALETTE` (same
+    `_make_trace_helpers` palette every other render function uses) — for the
+    typical two-source list `[dp_aim, spectrum]` this gives dp_aim the first
+    palette colour (blue) and spectrum the second (orange), matching every
+    other tab's blue-leapfrog/orange-spectrum convention. A source skipped
+    entirely for the baseline (e.g. `_GOALS_SOURCES`'s third "goals" entry,
+    which the plain "New HIV infections"/"AIDS deaths" indicators have no
+    disagg key for) draws no trace and does not shift the remaining sources'
+    colours, since palette index comes from position in `sources`, not from
+    the count of traces actually drawn.
+
+    The baseline PJNZ itself is excluded from the x-axis (it would always be
+    zero). A file missing from `data_by_pjnz` (failed run) or missing this
+    source's data is silently dropped from that source's trace only, so
+    dp_aim/spectrum can end up with different sets of bars.
+    """
+    ind_def = indicator_map[indicator]
+    baseline_data = data_by_pjnz.get(baseline_stem)
+    baseline_years = output_years_by_pjnz.get(baseline_stem)
+
+    fig = go.Figure()
+    if baseline_data is None or baseline_years is None:
+        fig.update_layout(title_text=title)
+        return fig
+
+    compare_stems = [s for s in pjnz_stems if s != baseline_stem]
+
+    for idx, source in enumerate(sources):
+        baseline_total = _source_total(source, ind_def, baseline_data, baseline_years, year_start, year_end)
+        if baseline_total is None:
+            continue
+
+        xs: list[str] = []
+        ys: list[float] = []
+        for stem in compare_stems:
+            data_by_source = data_by_pjnz.get(stem)
+            output_years = output_years_by_pjnz.get(stem)
+            if data_by_source is None or output_years is None:
+                continue
+            stem_total = _source_total(source, ind_def, data_by_source, output_years, year_start, year_end)
+            if stem_total is None:
+                continue
+            xs.append(stem)
+            ys.append(baseline_total - stem_total)
+
+        if xs:
+            fig.add_trace(go.Bar(
+                x=xs, y=ys, name=source.label,
+                marker_color=_PALETTE[idx % len(_PALETTE)],
+            ))
+
+    fig.update_xaxes(title_text="PJNZ file")
+    fig.update_yaxes(
+        showgrid=True, gridcolor="#e5e5e5", zeroline=True, zerolinecolor="#999",
+        title_text=y_title, title_font=dict(size=11),
+    )
+    fig.update_layout(
+        barmode="group",
+        height=max(450, 90 + 40 * len(compare_stems)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hoverlabel=dict(namelength=-1),
+        title_text=title,
+        margin=dict(t=80, b=100, l=60, r=20),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    return fig
+
+
 def render_multi_pjnz_comparison(
     *,
     indicator_map: dict[str, Any],
