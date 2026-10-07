@@ -15,6 +15,7 @@ dependencies = [
     "leapfrog-goals>=1.0.7",
     "shinywidgets>=0.8.1",
     "leapfrog-py>=1.0.20",
+    "jinja2>=3.1.6",
 ]
 
 # Uncomment and set the path to use local version of leapfrog-goals when developing

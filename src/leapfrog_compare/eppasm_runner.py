@@ -1,6 +1,6 @@
 """
 Shell out to eppasm / eppasm-leapfrog's `simmod()` (via r/run_simmod.R),
-caching results to disk as tidy CSVs — one per (PJNZ, package) — since the R
+caching results to disk as tidy CSVs — one per (PJNZ, package build) — since the R
 subprocess is much slower than the in-process Python model calls the other
 tabs use. Results are computed on first request and cached; pass force=True
 (wired to a "Re-run" button in the UI) to recompute.
@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 import leapfrog_compare.config as config
+from leapfrog_compare.r_packages import package_fingerprint
 
 _R_SCRIPT = Path(__file__).resolve().parent.parent.parent / "r" / "run_simmod.R"
 
@@ -30,7 +31,10 @@ _USE_LOCAL_CHECKOUT = {
 
 def _cache_path(pjnz_path: Path, package: str) -> Path:
     safe_package = package.replace(".", "_")
-    return config.EPPASM_CACHE_DIR / f"{pjnz_path.stem}__{safe_package}.csv"
+    return (
+        config.EPPASM_CACHE_DIR
+        / f"{pjnz_path.stem}__{safe_package}__{package_fingerprint(package)}.csv"
+    )
 
 
 def run_eppasm(pjnz_path: Path, package: str, *, force: bool = False, timeout: int = 600) -> pd.DataFrame:
